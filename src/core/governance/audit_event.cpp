@@ -60,7 +60,8 @@ const nlohmann::json& schema_document() {
                               "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted",
                               "audit_purged", "data_changed",
                               "egress_denied", "safe_mode_changed",
-                              "safe_mode_confirmed"] },
+                              "safe_mode_confirmed",
+                              "egress_policy_reloaded"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -149,6 +150,7 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::EgressDenied: return "egress_denied";
         case AuditAction::SafeModeChanged: return "safe_mode_changed";
         case AuditAction::SafeModeConfirmed: return "safe_mode_confirmed";
+        case AuditAction::EgressPolicyReloaded: return "egress_policy_reloaded";
     }
     return "data_access";
 }
@@ -181,6 +183,7 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "egress_denied") return AuditAction::EgressDenied;
     if (name == "safe_mode_changed") return AuditAction::SafeModeChanged;
     if (name == "safe_mode_confirmed") return AuditAction::SafeModeConfirmed;
+    if (name == "egress_policy_reloaded") return AuditAction::EgressPolicyReloaded;
     return std::nullopt;
 }
 

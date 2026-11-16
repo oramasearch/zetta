@@ -93,6 +93,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
     out += "| `--egress-allow LIST` | outside destinations this node may connect to (repeatable): host, `*.domain`, address or CIDR range, each optionally `:port`; `*` allows everything |\n";
+    out += "| `--egress-allow-file PATH` | more allowlist entries from a file the node re-reads while running (for example a mounted ConfigMap): a malformed replacement keeps the last good policy and is audited; a file missing at startup adds nothing |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
     out += "**Outbound network is denied by default.** Without `--egress-allow` the\n";
     out += "node may connect only to loopback (and its Clerk issuer, when one is set);\n";
@@ -156,6 +157,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` | `--connector-allow-destinations` |\n";
     out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
     out += "| `ZETTA_EGRESS_ALLOW` | `--egress-allow` (used when no flag is given) |\n";
+    out += "| `ZETTA_EGRESS_ALLOW_FILE` | `--egress-allow-file` (used when no flag is given) |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";
     out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";

@@ -67,6 +67,7 @@ enum class AuditAction {
     EgressDenied,  // the egress policy refused an outbound connection (CTL-4, #75)
     SafeModeChanged,    // a database's or connection's safe mode level changed (#1373)
     SafeModeConfirmed,  // a caller confirmed a safe-mode warning and the statement ran (#1373)
+    EgressPolicyReloaded,  // the egress allowlist file was loaded, replaced or refused (#1332)
 };
 
 // Completeness metadata for an authorised high-frequency read window (#1154).

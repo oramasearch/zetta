@@ -39,7 +39,9 @@ credential, `cluster_secret` gains the optional `retired_join_tokens`, and
 regenerated into OpenAPI. See
 [connector query](../docs/data/connector-query.md#saved-connections).
 `egress_denied` joins the audit-event action enum for connections the egress
-policy refused (#75, [egress policy](../docs/governance/egress-policy.md)).
+policy refused (#75, [egress policy](../docs/governance/egress-policy.md)), and
+`egress_policy_reloaded` for each load, replacement or refused replacement of the
+egress allowlist file (#1332).
 
 `object_bucket`, `object_lease` and `object_signal` are the object capability's
 contracts: a bucket definition and its owner lease in the replicated catalogue,

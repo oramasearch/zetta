@@ -1,10 +1,16 @@
 // The node's outbound egress policy (CTL-4, #75,
 // docs/governance/egress-policy.md): denied by default, an explicit allowlist,
-// loopback never counted as egress. The dialler-level enforcement is covered in
+// loopback never counted as egress; and the allowlist file the node re-reads
+// while running (#1332). The dialler-level enforcement is covered in
 // tests/connect/test_native_http_transport.cpp.
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include "zetta/connect/egress_policy.hpp"
 
@@ -167,6 +173,159 @@ TEST(EgressPolicy, TheObserverHearsEachDenial) {
     ASSERT_EQ(heard.size(), 1U);
     EXPECT_EQ(heard[0].host, "x.example");
     EXPECT_TRUE(heard[0].reason.starts_with("egress denied: x.example:443"));
+}
+
+// --- The allowlist file the node re-reads while running (#1332) ---
+
+using zetta::connect::EgressAllowFile;
+
+// A fresh directory per test, removed afterwards.
+class EgressAllowFileTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        dir_ = std::filesystem::temp_directory_path() /
+               ("zetta-egress-file-" + std::to_string(::getpid()) + "-" +
+                ::testing::UnitTest::GetInstance()->current_test_info()->name());
+        std::filesystem::remove_all(dir_);
+        std::filesystem::create_directories(dir_);
+    }
+    void TearDown() override { std::filesystem::remove_all(dir_); }
+
+    std::filesystem::path path(const std::string& name) const { return dir_ / name; }
+
+    static void write(const std::filesystem::path& file, const std::string& text) {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << text;
+    }
+
+    std::filesystem::path dir_;
+};
+
+TEST(EgressAllowFileText, CommentsAndLineBreaksSeparateEntries) {
+    std::string error;
+    const auto policy = zetta::connect::parse_egress_allow_file(
+        "# rendered by the operator\r\n"
+        "api.example.com:443   # the CRM\n"
+        "*.snowflakecomputing.com:443,10.0.0.0/8\n"
+        "\n",
+        &error);
+    ASSERT_TRUE(policy) << error;
+    EXPECT_EQ(policy->rules().size(), 3U);
+    EXPECT_TRUE(policy->allows_name("api.example.com", 443));
+    EXPECT_FALSE(policy->allows_name("api.example.com", 80));
+    EXPECT_TRUE(policy->allows_name("acct.snowflakecomputing.com", 443));
+    EXPECT_TRUE(policy->allows_address("10.1.2.3", 5432));
+    EXPECT_FALSE(policy->allows_name("rendered", 443));  // the comment is not an entry
+}
+
+TEST(EgressAllowFileText, AFileOfOnlyCommentsIsDeny) {
+    const auto policy = zetta::connect::parse_egress_allow_file("# nothing allowed\n");
+    ASSERT_TRUE(policy);
+    EXPECT_TRUE(policy->rules().empty());
+}
+
+TEST_F(EgressAllowFileTest, AMissingFileAtStartupIsDenyAndItAppliesWhenItAppears) {
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    std::string error;
+    const auto loaded = file.load(&error);
+    ASSERT_TRUE(loaded) << error;
+    EXPECT_EQ(loaded->outcome, EgressAllowFile::Outcome::Applied);
+    EXPECT_TRUE(loaded->policy.rules().empty());
+    EXPECT_NE(loaded->error.find("does not exist"), std::string::npos);
+
+    // Still missing: nothing to report again.
+    EXPECT_EQ(file.check().outcome, EgressAllowFile::Outcome::Unchanged);
+
+    write(path("allow"), "api.example.com:443\n");
+    const auto appeared = file.check();
+    EXPECT_EQ(appeared.outcome, EgressAllowFile::Outcome::Applied);
+    EXPECT_TRUE(appeared.policy.allows_name("api.example.com", 443));
+}
+
+TEST_F(EgressAllowFileTest, AMalformedFileAtStartupIsRefused) {
+    write(path("allow"), "api.example.com:99999\n");
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    std::string error;
+    EXPECT_FALSE(file.load(&error));
+    EXPECT_NE(error.find("egress allowlist entry"), std::string::npos) << error;
+}
+
+TEST_F(EgressAllowFileTest, AReplacementIsAppliedOnTopOfTheBase) {
+    write(path("allow"), "a.example.com:443\n");
+    EgressAllowFile file(path("allow").string(), policy_of("clerk.example.com:443"));
+    ASSERT_TRUE(file.load());
+    EXPECT_TRUE(file.policy().allows_name("a.example.com", 443));
+    EXPECT_TRUE(file.policy().allows_name("clerk.example.com", 443));
+    EXPECT_EQ(file.check().outcome, EgressAllowFile::Outcome::Unchanged);
+
+    write(path("allow"), "b.example.com:443\n");
+    const auto replaced = file.check();
+    EXPECT_EQ(replaced.outcome, EgressAllowFile::Outcome::Applied);
+    EXPECT_FALSE(replaced.policy.allows_name("a.example.com", 443));  // narrowed
+    EXPECT_TRUE(replaced.policy.allows_name("b.example.com", 443));
+    EXPECT_TRUE(replaced.policy.allows_name("clerk.example.com", 443));  // the base stays
+}
+
+TEST_F(EgressAllowFileTest, AMalformedReplacementKeepsTheLastGoodPolicyAndIsReportedOnce) {
+    write(path("allow"), "a.example.com:443\n");
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    ASSERT_TRUE(file.load());
+
+    write(path("allow"), "*\nbad host!\n");  // would widen to everything if half-applied
+    const auto refused = file.check();
+    EXPECT_EQ(refused.outcome, EgressAllowFile::Outcome::Refused);
+    EXPECT_NE(refused.error.find("last good policy"), std::string::npos);
+    EXPECT_TRUE(refused.policy.allows_name("a.example.com", 443));
+    EXPECT_FALSE(refused.policy.allows_everything());
+    EXPECT_FALSE(file.policy().allows_everything());
+    // The same bad file is not reported on every read.
+    EXPECT_EQ(file.check().outcome, EgressAllowFile::Outcome::Unchanged);
+
+    write(path("allow"), "c.example.com:443\n");
+    const auto fixed = file.check();
+    EXPECT_EQ(fixed.outcome, EgressAllowFile::Outcome::Applied);
+    EXPECT_TRUE(fixed.policy.allows_name("c.example.com", 443));
+}
+
+TEST_F(EgressAllowFileTest, ARemovedFileKeepsTheLastGoodPolicy) {
+    write(path("allow"), "a.example.com:443\n");
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    ASSERT_TRUE(file.load());
+    std::filesystem::remove(path("allow"));
+    const auto refused = file.check();
+    EXPECT_EQ(refused.outcome, EgressAllowFile::Outcome::Refused);
+    EXPECT_TRUE(refused.policy.allows_name("a.example.com", 443));
+    EXPECT_EQ(file.check().outcome, EgressAllowFile::Outcome::Unchanged);
+}
+
+// kubelet updates a projected ConfigMap by writing a new directory and
+// swapping the `..data` symlink: the path the node reads never changes.
+TEST_F(EgressAllowFileTest, ASymlinkSwapLikeKubeletsIsFollowed) {
+    std::filesystem::create_directories(path("v1"));
+    std::filesystem::create_directories(path("v2"));
+    write(path("v1") / "allow", "a.example.com:443\n");
+    write(path("v2") / "allow", "b.example.com:443\n");
+    std::filesystem::create_directory_symlink("v1", path("..data"));
+    std::filesystem::create_symlink(std::filesystem::path("..data") / "allow", path("allow"));
+
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    ASSERT_TRUE(file.load());
+    EXPECT_TRUE(file.policy().allows_name("a.example.com", 443));
+
+    std::filesystem::create_directory_symlink("v2", path("..data_tmp"));
+    std::filesystem::rename(path("..data_tmp"), path("..data"));
+    const auto swapped = file.check();
+    EXPECT_EQ(swapped.outcome, EgressAllowFile::Outcome::Applied);
+    EXPECT_FALSE(swapped.policy.allows_name("a.example.com", 443));
+    EXPECT_TRUE(swapped.policy.allows_name("b.example.com", 443));
+}
+
+TEST_F(EgressAllowFileTest, ADirectoryIsNotAnAllowlist) {
+    std::filesystem::create_directories(path("allow"));
+    EgressAllowFile file(path("allow").string(), EgressPolicy{});
+    std::string error;
+    EXPECT_FALSE(file.load(&error));
+    EXPECT_NE(error.find("not a regular file"), std::string::npos) << error;
 }
 
 }  // namespace

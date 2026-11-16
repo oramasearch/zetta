@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <system_error>
 #include <utility>
 
 namespace zetta::connect {
@@ -361,6 +364,130 @@ std::string egress_denied_reason(std::string_view host, std::uint16_t port) {
     return "egress denied: " + std::string(host) + ":" + std::to_string(port) +
            " is not on this node's egress allowlist (add it with --egress-allow "
            "or ZETTA_EGRESS_ALLOW; see docs/governance/egress-policy.md)";
+}
+
+std::optional<EgressPolicy> parse_egress_allow_file(std::string_view text,
+                                                    std::string* error) {
+    // Drop `#` comments and carriage returns, then parse as a list: line
+    // breaks are already separators.
+    std::string list;
+    list.reserve(text.size());
+    bool in_comment = false;
+    for (const char c : text) {
+        if (c == '\n') {
+            in_comment = false;
+            list += '\n';
+        } else if (in_comment) {
+            continue;
+        } else if (c == '#') {
+            in_comment = true;
+        } else if (c == '\r') {
+            list += ' ';
+        } else {
+            list += c;
+        }
+    }
+    return EgressPolicy::parse(list, error);
+}
+
+EgressAllowFile::EgressAllowFile(std::string path, EgressPolicy base)
+    : path_(std::move(path)), base_(std::move(base)), policy_(base_) {}
+
+std::optional<std::string> EgressAllowFile::read(bool& missing, std::string& error) const {
+    missing = false;
+    std::error_code code;
+    // status() follows symlinks, so a projected ConfigMap's `..data` link is
+    // resolved to the file kubelet last swapped in.
+    const auto status = std::filesystem::status(path_, code);
+    if (code || status.type() == std::filesystem::file_type::not_found) {
+        missing = !code;
+        error = "egress allowlist file " + path_ +
+                (missing ? " does not exist" : " cannot be read: " + code.message());
+        return std::nullopt;
+    }
+    if (!std::filesystem::is_regular_file(status)) {
+        error = "egress allowlist file " + path_ + " is not a regular file";
+        return std::nullopt;
+    }
+    std::ifstream in(path_, std::ios::binary);
+    if (!in) {
+        error = "egress allowlist file " + path_ + " cannot be opened";
+        return std::nullopt;
+    }
+    std::string text;
+    char buffer[4096];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
+        text.append(buffer, static_cast<std::size_t>(in.gcount()));
+        if (text.size() > kMaxFileBytes) {
+            error = "egress allowlist file " + path_ + " is larger than " +
+                    std::to_string(kMaxFileBytes) + " bytes";
+            return std::nullopt;
+        }
+    }
+    if (in.bad()) {
+        error = "egress allowlist file " + path_ + " could not be read";
+        return std::nullopt;
+    }
+    return text;
+}
+
+std::optional<EgressAllowFile::Result> EgressAllowFile::load(std::string* error) {
+    bool missing = false;
+    std::string why;
+    std::optional<std::string> text = read(missing, why);
+    if (!text) {
+        if (!missing) {
+            if (error) *error = why;
+            return std::nullopt;
+        }
+        // Missing at startup is deny: the file adds nothing until it appears.
+        policy_ = base_;
+        last_text_.reset();
+        last_error_ = why;
+        return Result{Outcome::Applied, policy_, why + " (it adds nothing until it appears)"};
+    }
+    std::string parse_error;
+    std::optional<EgressPolicy> from_file = parse_egress_allow_file(*text, &parse_error);
+    if (!from_file) {
+        if (error) *error = "egress allowlist file " + path_ + ": " + parse_error;
+        return std::nullopt;
+    }
+    EgressPolicy policy = base_;
+    policy.merge(*from_file);
+    policy_ = std::move(policy);
+    last_text_ = std::move(text);
+    last_error_.clear();
+    return Result{Outcome::Applied, policy_, {}};
+}
+
+EgressAllowFile::Result EgressAllowFile::check() {
+    bool missing = false;
+    std::string why;
+    std::optional<std::string> text = read(missing, why);
+    if (!text) {
+        // Missing or unreadable now: keep the last good policy. Report the
+        // state once, not on every read.
+        if (!last_text_ && last_error_ == why) return Result{Outcome::Unchanged, policy_, {}};
+        last_text_.reset();
+        last_error_ = why;
+        return Result{Outcome::Refused, policy_, why + "; the last good policy stays in force"};
+    }
+    if (last_text_ && *last_text_ == *text) return Result{Outcome::Unchanged, policy_, {}};
+    std::string parse_error;
+    std::optional<EgressPolicy> from_file = parse_egress_allow_file(*text, &parse_error);
+    last_text_ = std::move(text);
+    if (!from_file) {
+        // Malformed: never silently widen or narrow what the node may reach.
+        last_error_ = parse_error;
+        return Result{Outcome::Refused, policy_,
+                      "egress allowlist file " + path_ + ": " + parse_error +
+                          "; the last good policy stays in force"};
+    }
+    EgressPolicy policy = base_;
+    policy.merge(*from_file);
+    policy_ = std::move(policy);
+    last_error_.clear();
+    return Result{Outcome::Applied, policy_, {}};
 }
 
 }  // namespace zetta::connect
