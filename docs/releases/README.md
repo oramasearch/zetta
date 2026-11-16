@@ -39,8 +39,7 @@ wins is marketing, and the next reader rediscovers the gap expensively.
 
 ### Cutting a release
 
-Steve names the version. A release is finished when the Git tag, the GitHub release and the image
-tag all exist and the cluster runs that image.
+A release is finished when the Git tag, the GitHub release and the image tag all exist.
 
 1. **On a branch off `dev`**, write `docs/releases/vX.Y.Z.md`, add it to the list above, and move
    `kVersion` in `include/zetta/version.hpp`, `project(... VERSION ...)` in `CMakeLists.txt` and
@@ -51,24 +50,8 @@ tag all exist and the cluster runs that image.
    merge commit, never a squash. `dev` is kept.
 3. **Tag the merge commit** `vX.Y.Z` (a lightweight tag, like the earlier releases) and publish
    the GitHub release from the page, with its relative links made absolute at the tag.
-4. **Build the image from the tag**: check a clone out at `vX.Y.Z` and run
-   `build/zetta/build-zetta.sh <clone> main-<sha8>` (the recipe is in `codex-work/build/zetta/`;
-   liquid-bridge's `liquid-dev` skill has the procedure). The repository must still answer 404 to
-   an anonymous request.
-5. **Roll it**: set both image fields on `Lake/prod` (`spec.zetta.image` and
-   `spec.services.zettaImage`) and wait for every `*-zetta-0` pod to be Ready on the new tag. Each
-   node logs `zetta X.Y.Z: node started`. Lake answers 503 on agent-task polls for about a minute
-   while the bus restarts; check they have stopped.
-6. **Tag the image `vX.Y.Z` in Docker Hub**, naming the digest that is deployed, without
-   rebuilding: `retag-image.py zetta main-<sha8> vX.Y.Z` (in the `liquid-dev` skill).
-7. **Move the pins**: zetta-bridge's pin of `modules/zetta` to the tag, then the umbrella's
-   pointer, and refresh the `zetta-pin` build context lake builds against.
-
-`v0.4.0` is `oramasearch/zetta:main-104e8a98`, also tagged `v0.4.0`
-(`sha256:73e613748c1d6114a31fd8c462b55a09109de1b7c73323042429cb8a8509e1a9`); it is not rolled yet.
-`v0.3.0` is `oramasearch/zetta:main-d7551c75`, also tagged `v0.3.0`
-(`sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a`); it is not rolled yet.
-`v0.2.0` is `oramasearch/zetta:main-4015ef76`, also tagged `v0.2.0`.
+4. **Build the image from the tag** (a clean checkout at `vX.Y.Z`, `linux/amd64`) and push it
+   as `zetta:vX.Y.Z`. A node built from it logs `zetta X.Y.Z: node started`.
 
 ### Writing a release page
 

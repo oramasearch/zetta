@@ -17,7 +17,7 @@ namespace zetta::api {
 namespace {
 
 // The whole design lives in one inline stylesheet (no external assets — air-gapped nodes have no
-// egress). Orama Studio design system (imported from oramasearch/orama-design, #874): neutral
+// egress). Orama Studio design system (imported from the design repository, #874): neutral
 // operational surfaces, ink text, ONE action hue — Carbon Blue 60 — used surgically (the brand dot /
 // active icon / focus ring / primary action; red is reserved for alarms only), semantic
 // green/amber/red status always paired with text, IBM Plex Sans / IBM Plex Mono with a system-font

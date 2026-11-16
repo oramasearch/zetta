@@ -1,13 +1,13 @@
 ---
 name: hf-ops
-description: Publish and version Orama datasets and models on the PRIVATE OramaSearch HuggingFace org via the hf CLI. Use when training a model, generating a corpus, shipping a checkpoint, writing a dataset card or model card, or asked to "push the dataset/model", "upload to HF", "publish the corpus", or "version the checkpoint". Enforces the Orama rules — repos are ALWAYS private and verified private before any upload, every dataset and model carries an honest card, a checkpoint publishes with the corpus it learned from, and no token is ever printed or committed.
+description: Publish and version zetta's datasets and models on a Hugging Face organization via the hf CLI. Use when training a model, generating a corpus, shipping a checkpoint, writing a dataset card or model card, or asked to "push the dataset/model", "upload to HF", "publish the corpus", or "version the checkpoint". Enforces the rules — visibility is chosen deliberately and verified before any upload, every dataset and model carries an honest card, a checkpoint publishes with the corpus it learned from, and no token is ever printed or committed.
 ---
 
-# HF Ops (OramaSearch)
+# HF Ops
 
-Datasets and models live on the Hub, privately, under **`OramaSearch`** — not in git. Every corpus
-version and every checkpoint is published there with a card that says what it is and where it
-fails.
+Datasets and models live on the Hugging Face Hub under the project's organization (`<org>` below),
+not in git. Every corpus version and every checkpoint is published there with a card that says what
+it is and where it fails.
 
 `hf` CLI (`brew install huggingface-cli` / `pip install huggingface_hub`). Auth is `HF_TOKEN` in the
 environment — **never print it, never write it into a file that could be committed, never paste it
@@ -25,19 +25,19 @@ Hub is the right store; git holds the generator, the tests, and the cards' sourc
 
 ## Non-negotiable rules
 
-1. **PRIVATE, always — and verified before uploading anything.** These carry product detail,
-   solution correctness profiles, and models trained on them. `--private` on create, then *check*:
+1. **Visibility is a deliberate choice, verified before uploading anything.** Create a repo
+   `--private` unless publishing it has been decided, then *check*:
 
    ```sh
    curl -s -H "Authorization: Bearer $HF_TOKEN" \
-     https://huggingface.co/api/datasets/OramaSearch/<name> | python3 -c "import json,sys; print(json.load(sys.stdin)['private'])"
+     https://huggingface.co/api/datasets/<org>/<name> | python3 -c "import json,sys; print(json.load(sys.stdin)['private'])"
    ```
 
-   A repo that reports `False` gets fixed before a single file goes up. Do not assume `--private`
-   worked.
+   A repo whose visibility is not what was intended gets fixed before a single file goes up. Do
+   not assume `--private` worked.
 
-2. **Never a public repo or fork.** Same rule as `oramasearch` on GitHub: a public repo cannot be
-   made private after the fact without the content having existed publicly.
+2. **Never make a repo public by accident.** Content that was public once cannot be taken back by
+   flipping the repo to private.
 
 3. **Every upload carries a card.** A dataset or model with no card is an artifact nobody can use
    six weeks later. See the card rules below.
@@ -52,8 +52,8 @@ Hub is the right store; git holds the generator, the tests, and the cards' sourc
 
 | | |
 |---|---|
-| `OramaSearch/base-agent-interaction-corpus` | dataset — the base agent's training corpora, `interaction-corpus-vN.jsonl` + `.canary` |
-| `OramaSearch/base-agent-0.6b` | model — checkpoints, one folder per version (`v9/`, `v10/`) |
+| `<org>/base-agent-interaction-corpus` | dataset — the base agent's training corpora, `interaction-corpus-vN.jsonl` + `.canary` |
+| `<org>/base-agent-0.6b` | model — checkpoints, one folder per version (`v9/`, `v10/`) |
 
 One repo per artifact *family*, versioned by folder or filename — not a repo per run. A reader
 wants the lineage in one place.
@@ -61,9 +61,9 @@ wants the lineage in one place.
 ## Publishing a corpus
 
 ```sh
-hf upload OramaSearch/base-agent-interaction-corpus \
+hf upload <org>/base-agent-interaction-corpus \
   data/corpora/interaction-corpus-vN.jsonl interaction-corpus-vN.jsonl --repo-type dataset
-hf upload OramaSearch/base-agent-interaction-corpus \
+hf upload <org>/base-agent-interaction-corpus \
   data/corpora/interaction-corpus-vN.jsonl.canary interaction-corpus-vN.jsonl.canary --repo-type dataset
 ```
 
@@ -73,7 +73,7 @@ laptop cannot be used to check anyone else's claim.
 ## Publishing a checkpoint
 
 ```sh
-hf upload OramaSearch/base-agent-0.6b data/checkpoints/<dir> vN --repo-type model
+hf upload <org>/base-agent-0.6b data/checkpoints/<dir> vN --repo-type model
 ```
 
 - **Push from the machine that trained it.** Installing `hf` on the training box beats a 2.3 GB
@@ -136,6 +136,6 @@ is the same content written for someone outside the repo. When one changes, chan
 
 ## Version history
 
-- **v1.0.0 (2026-07-27)** — Initial. The private-by-default rule with verification, corpus + canary
+- **v1.0.0** — Initial. The verified-visibility rule, corpus + canary
   together, checkpoints pushed from the training box, and the card rules that make an artifact
   trustworthy rather than merely present.

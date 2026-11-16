@@ -157,7 +157,7 @@ own environment once read so no child process inherits it; see
 
 The directory is created with mode **0700**, and files with mode **0600**
 before any secret bytes are written, independently of the process umask
-(#1413, LSR-240). Cluster identity persistence and the connector's local root
+(#1413). Cluster identity persistence and the connector's local root
 secret use the same directory-relative storage helper. Existing directories
 and files are restricted before use; symlinks, multiply linked files,
 non-regular files and objects owned by another UID refuse the load.

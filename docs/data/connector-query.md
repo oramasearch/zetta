@@ -157,7 +157,7 @@ structure, including the column-catalog query. Postgres fake-runner tests
 check both string settings. These fake tests need no warehouse or database;
 the local Postgres adapter test verifies UTF-8 overrides `PGCLIENTENCODING=SJIS`.
 
-## Connector destination approval (#1414, LSR-241)
+## Connector destination approval (#1414)
 
 `list_source_tables` accepts a saved connection for a reader with discovery
 permission. An inline connector also requires `orchestration:create_connection`

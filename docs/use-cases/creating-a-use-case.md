@@ -1,10 +1,8 @@
 # Creating a use case — the engine recipe
 
 How a new catalog use case (UC-N) is built in THIS repo. The upstream flow
-(deep-research prompt → blueprint artifact → issues → worktree plan) lives in
-amaro-bridge's `add-use-case` skill + the
-[adding-a-use-case runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md);
-this page is the zetta-side complement: what actually gets written, where, and
+(deep-research prompt → blueprint artifact → issues → build plan) is in
+[README.md](README.md); this page is the zetta-side complement: what actually gets written, where, and
 what "done" means. UC-1 churn is the worked example throughout — a new use
 case is deliberately a **re-instantiation of its shape**, not a new
 architecture.

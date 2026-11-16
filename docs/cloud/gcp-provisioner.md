@@ -230,12 +230,12 @@ So the token never rides it. On a secure cluster `bring_up`:
 | The burst nodes' service account (`service_account`, or the default compute service account) | read the latest version | **`roles/secretmanager.secretAccessor`** on the secret `<pool>-cluster-token` |
 
 ```sh
-gcloud secrets create zetta-burst-cluster-token --project orama-churn \
+gcloud secrets create zetta-burst-cluster-token --project example-churn \
   --replication-policy automatic   # once, no version yet
-gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project orama-churn \
-  --member serviceAccount:burst@orama-churn.iam.gserviceaccount.com \
+gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project example-churn \
+  --member serviceAccount:burst@example-churn.iam.gserviceaccount.com \
   --role roles/secretmanager.secretAccessor
-gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project orama-churn \
+gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project example-churn \
   --member serviceAccount:<control-plane account> \
   --role roles/secretmanager.secretVersionAdder
 ```

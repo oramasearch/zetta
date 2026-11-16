@@ -158,7 +158,7 @@ public:
     // bool *element* (a full 0x00/0x01 byte) from a bool *field* (value in the
     // type nibble — nothing to read). Recurses through nested structs/lists/maps.
     bool skip_value(CompactType type, bool in_collection) {
-        // Nesting is bounded (LSR-251, #1424): a hostile footer of nested lists, maps or structs
+        // Nesting is bounded (#1424): a hostile footer of nested lists, maps or structs
         // would otherwise recurse until the stack runs out. Parquet's own metadata nests a few
         // levels; 64 is far beyond any real file.
         const bool nests = type == CompactType::List || type == CompactType::Set ||

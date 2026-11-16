@@ -269,7 +269,7 @@ TEST(ViT, RealCheckpointLoadsWhenExplicitlyConfigured) {
       << error;
 }
 
-// LSR-245 (#1418): a second frame after the scan would clear the decoded planes while the scan stays
+// #1418: a second frame after the scan would clear the decoded planes while the scan stays
 // complete; the decoder refuses the image instead of converting empty planes.
 TEST(ImageDecode, ASecondJpegFrameIsRefused) {
   std::string bytes = constant_gray_jpeg();

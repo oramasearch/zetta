@@ -65,7 +65,7 @@ answers, and a second person reproduces the numbers.
 
 - **Step 3 decides whether the number means anything.** Without negative controls, a base can
   post a high score while its graders catch nothing. This is the same discipline the
-  reference implementation (`homer6/blender-rl`) enforces with its admission gate.
+  reference implementation (blender-rl (an earlier RLVR prototype, not public)) enforces with its admission gate.
 - **Step 7 is the difference between a base and an overfit.** A model that only improves on
   its training games has learned the games, not the skill every customer will fork.
 - **Step 4 matters for honesty.** A base whose score is mostly LLM-judged rather than
@@ -84,4 +84,4 @@ answers, and a second person reproduces the numbers.
 - #248 — the shared eval corpus and admission gate this measures against.
 - #554 — Auto-Suggest, which generates the *customer* curriculum (for #853); the general
   games here are Orama-curated.
-- `homer6/blender-rl` — the validated RLVR reference to reproduce.
+- blender-rl (an earlier RLVR prototype, not public) — the validated RLVR reference to reproduce.

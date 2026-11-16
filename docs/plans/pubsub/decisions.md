@@ -1,7 +1,7 @@
 # Decisions
 
-Each entry: what, why, what it costs, what would make us revisit. Settled by Steve
-unless noted.
+Each entry: what, why, what it costs, what would make us revisit. Settled unless
+noted.
 
 ## The standing rule (from D6, D9, D10, D19)
 
@@ -253,7 +253,7 @@ reloaded** after any shutdown, graceful or not. Like every other zetta entity, a
 topic definition is replicated state (a CRDT key), which gives both persistence
 and cluster-wide visibility. Answers [Q22](questions.md).
 
-**Interpretation corrected by Steve (D17):** events survive restarts by
+**Interpretation corrected (D17):** events survive restarts by
 default too, not only on persistent topics.
 
 ## D15 — Persistent topics keep their events across graceful shutdown and crash (2026-09-27) — *narrowed by D17*
@@ -476,8 +476,7 @@ The envelope never proves the sender; identity comes from governance.
 **What.** Each addressable entity has an **inbox**, a queue of its own.
 `to: agent:405` puts the event in agent 405's inbox; `to: topic:abc123`
 publishes to the topic, and its subscribers receive it by their rules; a
-`table:` address has an inbox too. Answers [Q28](questions.md) (Steve: "yes,
-that's right").
+`table:` address has an inbox too. Answers [Q28](questions.md) (confirmed).
 
 **Open (low priority):** what drains a table's inbox by default, e.g. inserting
 each event as a row.
@@ -543,7 +542,7 @@ missing) is dropped and logged, never retried in a loop; reading it is governed
 
 **What.** When an agent acts on someone's behalf, the envelope carries both, as
 email does with `From` and `Sender`: **`from`** is the principal the event is
-for (`user:steve`), **`sender`** is the one that actually sent it
+for (`user:riley`), **`sender`** is the one that actually sent it
 (`agent:ask-orama`). Governance checks that the sender may act for `from`, and
 the audit records both. Configurable at every level (the standing rule), e.g. a
 topic may require `sender` to be shown, or hide it from recipients. Confirms the
@@ -595,15 +594,15 @@ produces a result raises the question of where the result goes ([Q33](questions.
 **What.** Configurable at every level. The **global default is to send nothing**.
 Each drain has the default that is most logical for it: e.g. a SQL **query**
 replies (its result is the point), while an **insert** does not. **A reply goes
-to the event's `reply-to` list** (Steve, correcting an earlier "reply all");
+to the event's `reply-to` list** (correcting an earlier "reply all");
 email-style reply-all (also every `to` and `cc`, never `bcc`) is available as a
 configured option. With an empty `reply-to`, nothing is sent. Answers
 [Q33](questions.md) and [Q34](questions.md).
 
-| Drain | Default reply (proposal where not stated by Steve) |
+| Drain | Default reply (proposal where not stated) |
 |---|---|
-| SQL query | reply-to (Steve) |
-| table insert | none (Steve) |
+| SQL query | reply-to |
+| table insert | none |
 | `function:` / `procedure:` call | reply-to when it returns a value, *proposal* |
 | `model:` inference | reply-to, *proposal* |
 | `service:` | the service decides, *proposal* |

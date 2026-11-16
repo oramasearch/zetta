@@ -6,9 +6,8 @@ that look like the system.
 
 - **Built through coding agents, by design**: developing zetta with Claude
   Code (or another coding agent) is the normal mode, not an exception — the
-  entire disclosure network below IS the agent onboarding, the skills are its
-  checklists, and the reload map (`docs/full-context.md`) restores a session's
-  full context in one read. Developers also *use* a live node through their
+  entire disclosure network below IS the agent onboarding, and the skills are
+  its checklists. Developers also *use* a live node through their
   agent (the mcp-journeys exploratory layer): the fastest way to feel a
   product-ergonomics bug is to be the agent's user.
 - **Progressive disclosure of the repo**: root `CLAUDE.md` (rules + routing) →

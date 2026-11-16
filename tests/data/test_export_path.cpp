@@ -16,7 +16,7 @@
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 
-// The export root (#1397 LSR-164, #1399 LSR-166): a file a caller has the node write
+// The export root (#1397, #1399): a file a caller has the node write
 // (`generate_dataset`'s `path`, `submit_feedback`'s `export_path`) is created new under
 // `<data_dir>/exports`, with no absolute path, no `..`, no symbolic link and never over
 // an existing file, so a caller cannot truncate the node's security files or state.
@@ -156,7 +156,7 @@ struct ExportPathApi : ::testing::Test {
     }
 };
 
-// LSR-164 (#1397): the generated corpus cannot be written over a node file.
+// #1397: the generated corpus cannot be written over a node file.
 TEST_F(ExportPathApi, GenerateDatasetCannotTruncateANodeFile) {
     for (const std::string& path : escapes()) {
         const ApiResult generated = call("generate_dataset", {{"kind", "base-agent"}, {"path", path}});
@@ -181,7 +181,7 @@ TEST_F(ExportPathApi, GenerateDatasetWritesItsCorpusUnderTheExportRoot) {
     EXPECT_EQ(again.error.path, "/path");
 }
 
-// LSR-166 (#1399): the feedback bundle cannot be written over a node file.
+// #1399: the feedback bundle cannot be written over a node file.
 TEST_F(ExportPathApi, SubmitFeedbackCannotOverwriteANodeFile) {
     for (const std::string& path : escapes()) {
         const ApiResult submitted =

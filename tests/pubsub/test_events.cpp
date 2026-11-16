@@ -103,7 +103,7 @@ TEST(PubSubEvent, FrameRoundTripsEveryField) {
     event.encoding = Encoding::Json;
     event.mime = 7;
     event.priority = 200;
-    event.envelope.from = address("user:steve");
+    event.envelope.from = address("user:riley");
     event.envelope.sender = {address("agent:ask-orama"), address("agent:security-scan")};
     event.envelope.to = {address("topic:orders")};
     event.envelope.cc = {address("agent:405")};

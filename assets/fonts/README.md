@@ -1,7 +1,7 @@
 # Embedded fonts
 
 The Orama Studio typefaces — **IBM Plex Sans + IBM Plex Mono** (the Studio
-design system, `oramasearch/orama-design` `packages/design-system/`). Every
+design system, the design repository `packages/design-system/`). Every
 file here is **baked into a binary** at build time by
 `cmake/embed_font.cmake` (→ `build/generated/zetta_font_*.hpp` /
 `zetta_web_font_*.hpp`), so neither surface has a runtime font-file

@@ -1,6 +1,6 @@
 ---
 name: rlvr-training-data
-description: Generate verifiable-reward (RLVR) training data — the task/game corpora that train zetta's native agents — following blender-rl's "grow by generation, gate by verification" method. Use when creating or growing a training corpus for the base agent or a per-customer fork, synthesizing tasks from a solutions catalog or a customer's data, authoring reference solutions + negative controls, running the admission gate, tagging difficulty, holding out a generalization slice, pushing to a HuggingFace dataset, or generating synthetic data (e.g. into Postgres) in a customer's schema. Grounds every corpus in the solutions-designs portfolio (methodologies, S-n modules, the agent's five verbs and four autonomy classes) so it trains the agent to COMPOSE solutions, not answer questions about one. Triggers — "training data", "generate a corpus", "RLVR games", "reference solution", "admission gate", "synthetic data", "curriculum", "push to HF dataset", "train a future model", "multi-turn corpus", "corpus coverage".
+description: Generate verifiable-reward (RLVR) training data — the task/game corpora that train zetta's native agents — following blender-rl's "grow by generation, gate by verification" method. Use when creating or growing a training corpus for the base agent or a fine-tuned fork, synthesizing tasks from the solutions catalog or a deployment's own data, authoring reference solutions + negative controls, running the admission gate, tagging difficulty, holding out a generalization slice, pushing to a HuggingFace dataset, or generating synthetic data (e.g. into Postgres) in a target schema. Grounds every corpus in the methodology portfolio (methodologies, solution modules, the agent's five verbs and four autonomy classes) so it trains the agent to COMPOSE solutions, not answer questions about one. Triggers — "training data", "generate a corpus", "RLVR games", "reference solution", "admission gate", "synthetic data", "curriculum", "push to HF dataset", "train a future model", "multi-turn corpus", "corpus coverage".
 ---
 
 # rlvr-training-data — build verifiable-reward training corpora
@@ -9,13 +9,12 @@ zetta trains its own agents with **RLVR** (reinforcement learning with verifiabl
 rewards). The agent is only as good as the **games** it practises on: a game is
 *trainable* only if a deterministic grader can score it, and a corpus is *trustworthy*
 only if it **discriminates** — reference solutions pass, plausible-wrong attempts fail.
-This skill is how you produce that corpus, for the shipped base agent (#555) or a
-per-customer fork (#853).
+This skill is how you produce that corpus, for the shipped base agent or a
+fine-tuned fork trained on one deployment's data.
 
-**Reference to reproduce, not embed:** `homer6/blender-rl` — a validated RLVR loop whose
-dataset strategy (`docs/dataset_strategy.md`, `environments/blender_creation/task_generators.py`,
-`environments/blender_creation/tests/admission_gate.py`, `scripts/export_dataset.py`) is
-the method this skill distills. Also load **native-ai-dev** (building the model + RLVR
+**Reference to reproduce, not embed:** blender-rl, a validated RLVR loop whose dataset
+strategy (task generators, an admission gate, a dataset exporter) is the method this skill
+distills. Also load **native-ai-dev** (building the model + RLVR
 loop the corpus trains) and the module dev conventions (**zetta-dev**).
 
 ## The method — grow by generation, gate by verification (five principles)
@@ -46,8 +45,8 @@ Non-negotiable, straight from blender-rl's dataset strategy:
 7. **Coverage is enumerated from the product, not from imagination.** Every ask form the
    corpus omits is claimed by the nearest family, and the model then behaves *correctly for
    the wrong family* — fluent, grounded, and answering a different question, so every
-   aggregate metric stays green. This has shipped four times (#904 tool-use, #942 greetings,
-   #942 bare turns, #939 ungrounded blending). Enumerate from the surfaces below rather than
+   aggregate metric stays green. This has shipped more than once (tool use, greetings,
+   bare turns, ungrounded blending). Enumerate from the surfaces below rather than
    from what occurs to you while writing families.
 
 ## The zetta mapping (the native contract)
@@ -61,44 +60,41 @@ Non-negotiable, straight from blender-rl's dataset strategy:
 | The reference *script* that builds the artifact | the reference **execution graph** (`ir::ExecutionGraph`) + the `Connect→Clean→Model→Index→Serve→Act` mutation **trajectory** that builds it |
 | JSONL rows, grader contract in `info` | `Task`/`AdmissionCase` JSONL; the corpus loads as a HF dataset |
 
-A task with **no required facts is untrainable** (nothing to verify) — the constraint #554
-(Auto-Suggest) enforces before a task may enter the curriculum.
+A task with **no required facts is untrainable** (nothing to verify) — the constraint
+Auto-Suggest enforces before a task may enter the curriculum.
 
 ## What the corpus must cover — enumerate from the portfolio
 
 **We are building an AI agent that builds AI systems.** That is the product thesis, and it
-is what the corpus has to teach. The binding source is
-`modules/solutions-designs/docs/plan/` (⚠️ internal-confidential) — read
-[`00-strategy-kernel.md`](../../../../solutions-designs/docs/plan/00-strategy-kernel.md)
-first; D2 puts the agent at the center: **methodologies are the agent's tools, and the
-use-case catalog is its action space.**
+is what the corpus has to teach: **methodologies are the agent's tools, and the use-case
+catalog is its action space.** The coverage checklist is
+[`docs/agent/training-coverage-checklist.md`](../../../docs/agent/training-coverage-checklist.md).
 
 A corpus that teaches "answer questions about a churn model" is not a thin version of that
-— it is a different product. Enumerate coverage across four axes, all of which exist in the
-plan docs and none of which the engine's own `plan_templates.cpp` (33 ids) captures:
+— it is a different product. Enumerate coverage across four axes, none of which the engine's own `plan_templates.cpp`
+(33 ids) captures on its own:
 
-**1. The agent's five verbs** (`04-solutions-catalog.md` §2.4 — the agent operating
-definition). Every module is agent-operated across: **Build** (compose the graph, discover
+**1. The agent's five verbs** (the agent operating definition). Every module is agent-operated across: **Build** (compose the graph, discover
 features inside the leakage blocklist, propose label/window definitions, configure
 connectors) · **Run** (scoring cadences, push into systems of action, execute policy
 decisions inside caps, manage holdout randomization) · **Monitor** (drift/PSI, calibration,
 per-segment realized performance, holdout integrity, connector and schema health) ·
 **Explain** (reason codes per score, driver reports, "what changed since last cycle", the
-assembled ROI readout) · **Improve** (retrain on schedule and trigger, propose
-threshold/policy changes *with predicted ROI effect*, run designed experiments).
+assembled outcome readout) · **Improve** (retrain on schedule and trigger, propose
+threshold/policy changes *with their predicted effect*, run designed experiments).
 
 Today's corpus is almost entirely **Build** and **Explain**. Monitor and Improve are absent,
-and they are where a deployed customer spends most of their turns.
+and they are where a deployed agent spends most of its turns.
 
-**2. The four autonomy classes** (same section) — **A0 draft** (recommend only, a human
+**2. The four autonomy classes** — **A0 draft** (recommend only, a human
 executes) · **A1 approval-gated** (execute after a named human approves *this instance*) ·
 **A2 autonomous-under-audit** (execute inside the policy envelope) · **A3 self-tuning**
-(adjust thresholds inside pre-approved bounds, logging predicted and realized ROI effect).
+(adjust thresholds inside pre-approved bounds, logging predicted and realized effect).
 The class changes the correct reply for an identical ask: under A1, "rerun it with the new
 threshold" must produce an approval request, not a run. A corpus blind to autonomy trains an
-agent that acts when it should ask — the failure that makes governed self-serve unsellable.
+agent that acts when it should ask — the failure that makes governed self-serve unsafe.
 
-**3. The 21 methodologies and the 11 components** (`03-methodology-portfolio.md` §3–4).
+**3. The 21 methodologies and the 11 components.**
 M-1…M-21 across six families (tabular decision core · identity & structure · time &
 vigilance · action & decision · language/documents/perception · the data supply chain), and
 C-1…C-11 as the shared components the agent composes (connectors · entity resolution ·
@@ -111,22 +107,22 @@ trained agent emitted the same pipeline for churn, lead scoring and collections 
 forecasting Project produces the **forecasting** pipeline — backtested, no calibration — not
 the churn skeleton with the nouns swapped.
 
-**4. The solution anatomy** (`04-solutions-catalog.md` §2.6, twelve fields). A module is not
+**4. The solution anatomy** (twelve fields). A module is not
 a model: it is methodology composition + correctness adaptations + business wiring (actions
-and decision policy, systems of action, people and cadence) + ROI contract + the agent's
+and decision policy, systems of action, people and cadence) + outcome contract + the agent's
 operating definition + data plan + capability levels + deployment shapes + governance and
 failure modes. Asks land on **all** of it. "Who acts on this score, and in which system?" is
 a first-class ask, not an aside.
 
-### The reward is ROI, and the gate does not relax for the agent
+### The reward is the measured outcome, and the gate does not relax for the agent
 
-Two constraints from the kernel that bind corpus authoring directly:
+Two constraints bind corpus authoring directly:
 
-- **D7-2 — the metric the customer pays for is the metric the agent learns on.** Where a
-  case can express the solution's measured ROI signal, that is the reward, not a proxy for
-  it. An `Improve` case that proposes a threshold change must carry its **predicted ROI
+- **The metric the solution is measured on is the metric the agent learns on.** Where a
+  case can express the solution's measured outcome signal, that is the reward, not a proxy
+  for it. An `Improve` case that proposes a threshold change must carry its **predicted
   effect** as a checkable fact, because that is what the agent is actually optimizing.
-- **"One gate for three authors"** (`03-methodology-portfolio.md` §5.4) — human-authored,
+- **"One gate for three authors"** — human-authored,
   compiled-from-intent, and agent-initiated graphs clear the *same* correctness gate;
   `author_kind` is recorded and never consulted by any rule. This is why agent autonomy is
   governable at all, and it means a corpus case must never train the agent to expect
@@ -134,10 +130,10 @@ Two constraints from the kernel that bind corpus authoring directly:
 
 ### The vocabulary is load-bearing, not stylistic
 
-`modules/solutions-designs/docs/vocabulary.md`: **use case** = the problem · **methodology**
+**use case** = the problem · **methodology**
 = the arranged AI methods · **solution** = the methodology applied correctly *and wired to
 the business action*. Cardinality: many use cases ≈ many solutions ≫ few methodologies. A
-reply that calls a methodology a solution has told the customer the work is done when the
+reply that calls a methodology a solution has told the user the work is done when the
 business wiring — the part that realizes the value — has not been started. Combine with the
 product's user-facing contract (**Pipeline**, **Verification**, **Workspace Profile**,
 **Saved Version**, **Proposed Solution**, **Ask Orama**) from the root `CLAUDE.md`.
@@ -164,7 +160,7 @@ product's user-facing contract (**Pipeline**, **Verification**, **Workspace Prof
   corpus** → push to a **private HF dataset**. All creds/config via **env vars**
   (`HF_TOKEN`, `HF_DATASET_REPO`, `OPENROUTER_API_KEY`, `PERPLEXITY_API_KEY`); nothing is
   contacted except when a script is run.
-- **From a customer's data** (a fork): synthesize data in the customer's **exact schema**
+- **From a deployment's data** (a fork): synthesize data in that deployment's **exact schema**
   (a frontier model → local Postgres) with realistic signal, so the fork trains near
   real-shaped data with **no live-source dependency**.
 
@@ -190,7 +186,7 @@ Each a red → green → build → atomic-commit bite. See **nibble-dev**.
 - ❌ A Project that is not a real module from the catalog, or a pipeline shape borrowed from
   a different methodology.
 - ❌ Hardcoded secrets — creds are env vars. Foreign models/services are **authoring aids
-  only**, never in the train/infer path (ADR-17: the model is the product).
+  only**, never in the train/infer path (the model is the product).
 
 ## Related skills
 - **native-ai-dev** — build the model / RLVR loop the corpus trains (load with this).
@@ -200,11 +196,10 @@ Each a red → green → build → atomic-commit bite. See **nibble-dev**.
   no two consecutive replies byte-identical) is the acceptance this corpus is authored against.
 
 ## Version History
-- v2.0.0 (2026-08-06): Grounded the corpus in the solutions-designs portfolio — the agent's
+- v2.0.0 (2026-08-06): Grounded the corpus in the methodology portfolio — the agent's
   five verbs and four autonomy classes, M-1…M-21 + C-1…C-11, the twelve-field solution
-  anatomy, ROI-as-reward (D7-2), and "one gate for three authors". Added principles 6
-  (a turn is part of a thread) and 7 (enumerate coverage from the product), after the
-  bare-turn failure in #942 shipped a model that answered `"yes"` and `"what?"` identically.
-  Corpus generator redesign: https://github.com/oramasearch/zetta/issues/982
+  anatomy, outcome-as-reward, and "one gate for three authors". Added principles 6
+  (a turn is part of a thread) and 7 (enumerate coverage from the product), after a
+  bare-turn failure shipped a model that answered `"yes"` and `"what?"` identically.
 - v1.0.0 (2026-07-21): Initial — distilled from blender-rl's dataset strategy + the
-  base-agent training-corpus build (#866 → #863 → #862; Charles/Motive churn as sample #1).
+  base-agent training-corpus build (a churn use case as the first sample).

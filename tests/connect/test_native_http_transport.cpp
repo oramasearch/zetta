@@ -461,7 +461,7 @@ TEST_F(NativeHttpTransportFixture, RefusesARedirectToAnOutsideDestination) {
     EXPECT_EQ(scope.denials.size(), 1U);
 }
 
-// LSR-256 (#1429): a secret header stays on its origin. A redirect to the same host on another
+// #1429: a secret header stays on its origin. A redirect to the same host on another
 // port is another origin, so the bearer is dropped before that hop.
 TEST_F(NativeHttpTransportFixture, ARedirectToAnotherPortDropsTheSecretHeaders) {
     EgressPolicyScope scope("");

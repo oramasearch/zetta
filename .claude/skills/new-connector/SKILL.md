@@ -8,8 +8,7 @@ description: Add a NEW source connector to zetta so a query against an external 
 A **source connector** runs a read-only query against an external system and
 returns rows; [`data::add_dataset_rows`](../../../docs/data/add-dataset.md) shards and
 places those rows across the cluster. Together they turn a warehouse table into a
-clustered, featurizable zetta dataset with no manual export
-([#827](https://github.com/oramasearch/zetta/issues/827)).
+clustered, featurizable zetta dataset with no manual export.
 
 Follow the **zetta-dev** skill for all coding conventions while doing this, and
 **api-dev** when you get to the capability surface.
@@ -19,7 +18,7 @@ is the end-to-end method — **research** the source with a Perplexity deep-dive
 (the **`perplexity`** skill) into a connector-skill doc, **decide the transport**
 (HTTP+SQL API vs a wire-protocol driver — the ADR-17 gate), then **build** with
 this skill. Snowflake (HTTP API), MySQL (a wire protocol implemented natively: a
-sans-I/O session in zetta-core + a coroutine TCP/TLS driver in zetta-api, #895)
+sans-I/O session in zetta-core + a coroutine TCP/TLS driver in zetta-api)
 and Postgres (libpqxx driver, coroutine-wrapped via `runtime::offload`, a
 sanctioned ADR-17 exception) are the three worked examples. Read [`docs/data/connector-query.md`](../../../docs/data/connector-query.md)
 too — it is the shipped design this skill operationalizes.
@@ -126,10 +125,8 @@ If the source returns one undivided document, say so explicitly in the docs and
 take the serial path. Do not fake chunking by issuing `LIMIT`/`OFFSET` queries —
 that re-runs the query per page and can silently skew or duplicate rows.
 
-Cross-node co-launch is deliberately not wired yet and is **blocked** on
-[#828](https://github.com/oramasearch/zetta/issues/828) (a non-capturing
-partition-write path); the tiling is the piece it will fan out over. See
-[#829](https://github.com/oramasearch/zetta/issues/829).
+Cross-node co-launch is deliberately not wired yet: it is blocked on a
+non-capturing partition-write path; the tiling is the piece it will fan out over.
 
 ## The capability surface
 

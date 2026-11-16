@@ -12,8 +12,7 @@ intelligence** from quarters to hours — **Intelligence Velocity for Big Thinke
 > your scale is free headroom: solve very large data problems and the small ones come
 > for free.
 
-**Full vision + blueprint:** the [Orama Zetta docs site](https://github.com/oramasearch/zetta-docs)
-— strategy, architecture, domain model, roadmap. **This repo's docs:**
+**This repo's docs:**
 [docs/README.md](docs/README.md) (domain-organized). The product set lives in
 [docs/product/](docs/product/README.md) — [orama-zetta.md](docs/product/orama-zetta.md)
 (read-first framing), [vision](docs/product/vision.md) ·

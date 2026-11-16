@@ -17,7 +17,6 @@ cost (burst under a cap, spot-tolerant), flexibility (new silicon is a new
 backend, not a re-architecture), and resilience (self-heal around a vendor).
 Engine detail: [../architecture/true-hybrid.md](../architecture/true-hybrid.md).
 
-Buyer shorthand (internal): *self-deploying Databricks; Railway for
-private-cloud data + AI.* External claims discipline: cost-savings numbers
-stay internal until measured (blueprint RSK-6); the marketing site is the
+Claims discipline: cost-savings numbers are not
+stated until measured (blueprint RSK-6); the marketing site is the
 voice-of-record for public copy.

@@ -82,7 +82,7 @@ namespace zetta::api {
 
 namespace {
 
-// A path on this origin a browser will not read as another origin (LSR-262, zetta#1435): it starts
+// A path on this origin a browser will not read as another origin (zetta#1435): it starts
 // with one `/`, and holds no `\` (browsers read `/\host` as `//host`), no control character or
 // space (stripped or rewritten before parsing), and no scheme or authority. Only then is it
 // a redirect target.
@@ -3508,7 +3508,7 @@ struct ApiServer::Impl {
             out += render_data_explorer(context, route);
         } else if (view == "reports") {
             // Reports (#960 item 4): the IA and copy of the design's Reports screens
-            // (oramasearch/orama-design, feat/reports-surface), rendering the ENGINE's
+            // (the design repository's Reports surface), rendering the ENGINE's
             // numbers through `get_run_report` rather than the design's fixtures.
             const std::string run_id = query_param(route, "run", "");
             if (run_id.empty()) {

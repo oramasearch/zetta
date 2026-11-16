@@ -17,7 +17,7 @@
 namespace zetta::api {
 
 // Render the /mcp.md body. `origin` is the externally-visible scheme+host the
-// request arrived on (e.g. "https://zetta.oramadev.net"); the endpoint is
+// request arrived on (e.g. "https://zetta.example.com"); the endpoint is
 // `origin + "/mcp"`. `token_required` reflects whether the node has a bearer
 // token configured.
 std::string render_mcp_md(std::string_view origin, bool token_required);

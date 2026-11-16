@@ -68,12 +68,12 @@ TEST(ProjectInput, CreateFetchDropWithProvenance) {
     // An intent, pasted (no filename).
     auto intent = project->create_input(ProjectInputKind::Intent,
                                         ProjectInputSource::Pasted, kIntent,
-                                        /*filename=*/{}, "user:steve");
+                                        /*filename=*/{}, "user:riley");
     ASSERT_TRUE(intent);
     EXPECT_EQ(intent->kind(), ProjectInputKind::Intent);
     EXPECT_EQ(intent->source(), ProjectInputSource::Pasted);
     EXPECT_TRUE(intent->filename().empty());
-    EXPECT_EQ(intent->created_by(), "user:steve");
+    EXPECT_EQ(intent->created_by(), "user:riley");
     EXPECT_EQ(intent->project_id(), project->id());
     // content_hash is computed at the boundary, never trusted from the caller.
     EXPECT_EQ(intent->content_hash(), zetta::util::sha256_hex(kIntent));
@@ -118,12 +118,12 @@ TEST(ProjectInput, CaptureIntentStoresWithProvenance) {
     EXPECT_EQ(project->input_count(), 0u);
 
     // Capture a natural-language intent: kind=intent, source=pasted, no filename.
-    auto intent = project->capture_intent(kIntent, "user:steve");
+    auto intent = project->capture_intent(kIntent, "user:riley");
     ASSERT_TRUE(intent);
     EXPECT_EQ(intent->kind(), ProjectInputKind::Intent);
     EXPECT_EQ(intent->source(), ProjectInputSource::Pasted);
     EXPECT_TRUE(intent->filename().empty());
-    EXPECT_EQ(intent->created_by(), "user:steve");
+    EXPECT_EQ(intent->created_by(), "user:riley");
     EXPECT_EQ(intent->project_id(), project->id());
     // content_hash is computed at the boundary, never trusted from the caller.
     EXPECT_EQ(intent->content_hash(), zetta::util::sha256_hex(kIntent));
@@ -155,7 +155,7 @@ TEST(ProjectInput, CaptureIntentRejectsEmpty) {
     EXPECT_EQ(project->input_count(), 0u);
 
     // A real intent is still accepted afterward (rejection left no debris).
-    auto intent = project->capture_intent(kIntent, "user:steve");
+    auto intent = project->capture_intent(kIntent, "user:riley");
     ASSERT_TRUE(intent);
     EXPECT_EQ(project->input_count(), 1u);
 
@@ -174,7 +174,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaDisk) {
         project_id = project->id();
         auto input = project->create_input(ProjectInputKind::Artifact,
                                            ProjectInputSource::Upload, kIntent,
-                                           "intent.txt", "user:steve");
+                                           "intent.txt", "user:riley");
         ASSERT_TRUE(input);
         input_id = input->id();
         node.stop();
@@ -193,7 +193,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaDisk) {
     EXPECT_EQ(input->kind(), ProjectInputKind::Artifact);
     EXPECT_EQ(input->source(), ProjectInputSource::Upload);
     EXPECT_EQ(input->filename(), "intent.txt");
-    EXPECT_EQ(input->created_by(), "user:steve");
+    EXPECT_EQ(input->created_by(), "user:riley");
     EXPECT_EQ(input->content_hash(), zetta::util::sha256_hex(kIntent));
     ASSERT_TRUE(input->read_payload().has_value());
     EXPECT_EQ(*input->read_payload(), kIntent);
@@ -212,7 +212,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
         ASSERT_TRUE(project);
         auto input = project->create_input(ProjectInputKind::Intent,
                                            ProjectInputSource::Pasted, kIntent,
-                                           {}, "user:steve");
+                                           {}, "user:riley");
         ASSERT_TRUE(input);
         input_id = input->id();
         node.tick();  // persist the CRDT document
@@ -234,7 +234,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
             EXPECT_EQ(value.value("source", std::string{}), "pasted");
             EXPECT_EQ(value.value("content_hash", std::string{}),
                       zetta::util::sha256_hex(kIntent));
-            EXPECT_EQ(value.value("created_by", std::string{}), "user:steve");
+            EXPECT_EQ(value.value("created_by", std::string{}), "user:riley");
         }
     }
     EXPECT_EQ(input_keys, 1);

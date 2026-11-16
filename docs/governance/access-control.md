@@ -473,7 +473,7 @@ their own. The gate is **always on** (#799) — there is no mode switch:
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
 
-### Clerk token claims (#1423, LSR-250)
+### Clerk token claims (#1423)
 
 A Clerk token is accepted only when, besides its issuer, RS256 signature and `nbf`, it carries an
 integer **`exp`** still in the future and an **`azp`** that is one of this node's own origins,

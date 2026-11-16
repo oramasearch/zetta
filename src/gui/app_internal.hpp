@@ -23,7 +23,7 @@ namespace zetta::gui {
 
 // ── Orama Studio design-system palette (light) ─────────────────────────────
 // Semantic tokens imported from the Studio design system
-// (oramasearch/orama-design, #875; docs/product/experience/design-sync.md).
+// (the design repository, #875; docs/product/experience/design-sync.md).
 // The ONE action hue is Carbon Blue 60 — the "you are here" accent, used
 // surgically (active nav, one focal action), NEVER for status. Status uses the
 // semantic green/amber/red below. See CLAUDE.md.

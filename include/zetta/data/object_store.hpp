@@ -25,7 +25,7 @@ class ReplicationManager;
 
 // The object capability (#1005, docs/data/object-store.md): durable byte objects
 // addressed by (bucket, key), the storage under lake's liquid `store_backend`
-// (lake decision 54: a workspace's liquid store bytes live in its workspace Zetta).
+// (a workspace's liquid store bytes live in its workspace Zetta).
 // It maps one to one onto liquid's backend: put, put_range, get_range, remove,
 // list and barrier, plus usage, a per-bucket quota and an owner lease whose fence
 // every mutation carries.

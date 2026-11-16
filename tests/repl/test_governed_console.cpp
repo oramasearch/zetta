@@ -306,7 +306,7 @@ TEST(GovernedConsole, CapabilityDenyBlocksAndAudits) {
     node.stop();
 }
 
-// LSR-261 (#1434): the web shell's console runs as the signed-in user. A user without the right is
+// #1434: the web shell's console runs as the signed-in user. A user without the right is
 // blocked, and the statement is audited under the user's id, never as the local session.
 TEST(GovernedConsole, ASessionUserIsEnforcedAndAudited) {
     TempDir tmp;

@@ -1,6 +1,6 @@
 # Destination policy: where an author-chosen URL may go
 
-[#1394](https://github.com/oramasearch/zetta/issues/1394) (LSR-161 of the Lake
+[#1394](https://github.com/oramasearch/zetta/issues/1394) (a finding of the
 pre-launch security review).
 
 ## The problem

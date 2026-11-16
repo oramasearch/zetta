@@ -1,4 +1,4 @@
-// zetta#1390 (LSR-070): a model's split feature indices and child indices are
+// zetta#1390: a model's split feature indices and child indices are
 // checked against the model itself before anything scores or explains it.
 //
 // A model brought from a file (register_model -> import_model) used to be

@@ -182,7 +182,7 @@ verifiable criteria, which is why a trained agent's pipelines are correct by con
 | The execution graph | `ir/execution_graph.hpp` (the 6 `StepKind`s) |
 | RLVR / GRPO step | `compute::model::MlxQwenModel::grpo_step`, `agent::grpo_step` |
 | Corpus generation (catalog → gated JSONL) | `scripts/build_catalog.py`, `scripts/gen_base_corpus.py` |
-| Method + skill | the **rlvr-training-data** skill; `homer6/blender-rl` (the reference to reproduce) |
+| Method + skill | the **rlvr-training-data** skill; blender-rl (an earlier RLVR prototype, not public) (the reference to reproduce) |
 
 Related: [`training-data-runbook.md`](training-data-runbook.md) (operate the generators) ·
 #866 (corpus) · #863 (base training) · #853 (the fork) · #862 (the churn demo).

@@ -88,7 +88,7 @@ struct DecodedColumnResult {
     bool ok() const { return error.empty(); }
 };
 
-// Check the shape every row transpose relies on (LSR-167): a supported physical
+// Check the shape every row transpose relies on: a supported physical
 // type, `validity` empty or exactly `num_rows` long, exactly one dense value per
 // present row in the vector `type` selects, and every other value vector empty.
 // Returns "" when the column is consistent, else the reason. The decoders run it
@@ -100,7 +100,7 @@ std::string validate_decoded_column(const DecodedColumn& column);
 // is the parsed footer (#505); the chunk is `row_groups[row_group_index]
 // .columns[column_index]`, and `column_index` also selects the matching leaf
 // (for its physical type + max definition level). A chunk whose physical type
-// is not the leaf's fails (LSR-167). Non-throwing.
+// is not the leaf's fails. Non-throwing.
 DecodedColumnResult decode_column_chunk(std::string_view file_bytes,
                                         const FileMetaData& metadata,
                                         std::size_t row_group_index,

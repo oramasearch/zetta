@@ -6,7 +6,7 @@
 
 **Orama Zetta turns a question into running, deployed intelligence.** Describe a data or AI problem in plain language — or hand over an artifact you already have (an n8n workflow, a SQL script, a notebook) — and Orama Zetta architects a correct pipeline, deploys it onto infrastructure *you* control, runs it, and **learns from your data**. *The data engineer, the AI engineer, and the platform engineer — in a bottle.* **Intelligence Velocity for Big Thinkers.**
 
-`zetta` (this repo + binary) is the **codename**; **Orama Zetta** is the **product**. Lead with what it does for the user — *not* "a database." Canonical framing: the [one-pager](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md).
+`zetta` (this repo + binary) is the **codename**; **Orama Zetta** is the **product**. Lead with what it does for the user — *not* "a database."
 
 ## Working decisions (mirror the blueprint ADRs)
 
@@ -20,7 +20,7 @@ These are the locked product/process decisions (recorded as `adr` artifacts in t
 
 ## The blueprint
 
-Source of truth is the **worktree-manager (wtm) project `ORAMA-ZETTA`** → projected to the [`zetta-docs`](https://github.com/oramasearch/zetta-docs) site + the [`oramasearch/zetta`](https://github.com/oramasearch/zetta/issues) issues. **Don't hand-edit the generated docs or issues** — edit the blueprint, then re-sync (the `zetta-sync` skill).
+Source of truth is the blueprint (the `ORAMA-ZETTA` project), projected to the [`oramasearch/zetta`](https://github.com/oramasearch/zetta/issues) issues. **Don't hand-edit the generated issues** — edit the blueprint, then re-sync.
 
 ## Building the first use case — a wtm worktree plan
 
@@ -28,7 +28,5 @@ The first use case — **churn intelligence (UC-1)** — is built as a **wtm wor
 
 ## Links
 
-- **One-pager (product framing):** https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md
 - **Grooming epic:** https://github.com/oramasearch/zetta/issues/279
-- **2026-06-24 alignment call:** https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-24-casey-issac-steve
-- **Add a use case to the catalog:** the [adding-a-use-case runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md) + the `add-use-case` skill — generate a Perplexity Deep Research prompt → land it in the blueprint → build via a worktree plan. (Churn UC-1 is the exemplar.)
+- **Add a use case to the catalog:** [../use-cases/README.md](../use-cases/README.md) — generate a Perplexity Deep Research prompt → land it in the blueprint → build via a worktree plan. (Churn UC-1 is the exemplar.)

@@ -941,7 +941,7 @@ TEST_F(ActionIntegrationFixture, PreparesAndRecordsReportAttemptsWithoutSending)
               prepared->publication.publication_id);
 }
 
-// #1394 (LSR-161): an action endpoint is author-chosen, so delivery resolves it and
+// #1394: an action endpoint is author-chosen, so delivery resolves it and
 // dials only public addresses unless the node allows the class. A loopback endpoint
 // is refused before any connection, by name and by literal.
 TEST_F(ActionIntegrationFixture, DeliveryRefusesALoopbackEndpointTheNodeDoesNotAllow) {

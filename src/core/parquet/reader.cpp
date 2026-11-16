@@ -23,7 +23,7 @@ ParquetRowsResult read_parquet_rows(std::string_view file_bytes) {
         return result;
     }
     // This reader holds every row as a JSON object, so the footer's count, which is the file's
-    // to choose, is bounded before anything is allocated (LSR-252, #1425).
+    // to choose, is bounded before anything is allocated (#1425).
     if (num_rows > kMaxParquetRowsInMemory) {
         result.error = "parquet reader: the footer claims " + std::to_string(num_rows) +
                        " rows; this reader holds at most " +

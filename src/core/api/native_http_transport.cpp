@@ -612,8 +612,8 @@ private:
             if (location.empty() || redirects_remaining <= 0) break;  // final answer
 
             const std::string next = resolve_location(hop.url, location);
-            // The secret headers stay only on the same origin: scheme, host and port (LSR-256,
-            // #1429). A hop to another port, or from https down to http, drops them as a hop
+            // The secret headers stay only on the same origin: scheme, host and port (#1429).
+            // A hop to another port, or from https down to http, drops them as a hop
             // to another host does; a target that does not parse drops them too.
             RequestTarget before, after;
             const auto lower = [](std::string text) {

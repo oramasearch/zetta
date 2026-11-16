@@ -68,7 +68,7 @@ TEST(StorageCapabilities, ANodeAnswersItsDiskByKind) {
     node.stop();
 }
 
-// LSR-257 (#1430): a caller who is not an administrator sees only the buckets it may read, and no
+// #1430: a caller who is not an administrator sees only the buckets it may read, and no
 // per-kind totals of the node's disk.
 TEST(StorageCapabilities, ACallerSeesOnlyTheBucketsItMayRead) {
     zetta::test::TempDir dir;

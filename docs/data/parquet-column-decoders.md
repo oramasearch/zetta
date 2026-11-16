@@ -86,7 +86,7 @@ malformed / truncated / unsupported page, or an out-of-range dictionary index,
 fails the decode with a reason instead of reading out of bounds or producing
 wrong values — the binary analog of schema-at-the-boundary.
 
-### Physical types and decoded shape (LSR-167, #1400)
+### Physical types and decoded shape (#1400)
 
 The footer states a column's physical type twice: once on the schema leaf and
 once on every column chunk. A crafted file can make them disagree, or make one
@@ -114,7 +114,7 @@ second row group decoded "successfully": the merged column kept the first
 group's type, counted every group's rows, and the transpose read past the end
 of the `int64` vector.
 
-### Hybrid run bounds (LSR-176, #1409)
+### Hybrid run bounds (#1409)
 
 Dictionary indices (`PLAIN_DICTIONARY` and `RLE_DICTIONARY`) and definition
 levels share the same RLE/bit-packed decoder. It accepts widths from 0 through

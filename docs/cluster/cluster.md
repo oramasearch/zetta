@@ -53,10 +53,10 @@ and the command to add another node:
 
 ```
 zetta: cluster node 229431f5-275e-4754-acb9-2eea4bac007b
-zetta: listening on 192.168.123.140:7777
+zetta: listening on 192.0.2.10:7777
 zetta: listening on 127.0.0.1:7777
 zetta: inter-node mTLS on (join token in <data_dir>/security/cluster-secret.json)
-zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <join-token> --identity-root <64-hex>
+zetta: add another node with: zetta --peer 192.0.2.10:7777 --join-token <join-token> --identity-root <64-hex>
 ```
 
 The printed command never carries the join token itself (#1393): the literal

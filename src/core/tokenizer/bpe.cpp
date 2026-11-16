@@ -59,7 +59,7 @@ std::optional<BpeTokenizer> BpeTokenizer::from_vocab_and_merges(
     for (const auto& [token, id] : tokenizer.vocab_) {
         if (id > max_id) max_id = id;
     }
-    // The table is sized by the largest id, which the vocabulary file chooses (LSR-258, #1431):
+    // The table is sized by the largest id, which the vocabulary file chooses (#1431):
     // real vocabularies number their tokens densely, so an id far past the vocabulary's size is
     // refused instead of allocating a table for it.
     if (static_cast<std::size_t>(max_id) >= max_token_id(tokenizer.vocab_.size())) {

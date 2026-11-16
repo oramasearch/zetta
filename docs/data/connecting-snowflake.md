@@ -39,13 +39,13 @@ Note the chicken-and-egg: you cannot use the PAT to create the policy that enabl
 from a **browser worksheet**, which authenticates by password/SSO and is unaffected:
 
 ```sql
-CREATE NETWORK POLICY IF NOT EXISTS steve_pat_policy
+CREATE NETWORK POLICY IF NOT EXISTS analyst_pat_policy
   ALLOWED_IP_LIST = ('203.0.113.7');   -- your egress IP; see below
 
-ALTER USER STEVE SET NETWORK_POLICY = steve_pat_policy;
+ALTER USER ANALYST SET NETWORK_POLICY = analyst_pat_policy;
 
 -- confirm it landed on the USER, not just the account
-SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER STEVE;
+SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER ANALYST;
 ```
 
 Find the egress IP the node will actually present — not the office IP, the one the machine leaves
@@ -66,7 +66,7 @@ fixes:
 Start with `('0.0.0.0/0')` only to prove the path, and narrow it the moment it works:
 
 ```sql
-ALTER NETWORK POLICY steve_pat_policy SET ALLOWED_IP_LIST = ('203.0.113.7');
+ALTER NETWORK POLICY analyst_pat_policy SET ALLOWED_IP_LIST = ('203.0.113.7');
 ```
 
 Leaving it open means any host on the internet holding that token can authenticate. If the token
@@ -109,7 +109,7 @@ GRANT USAGE ON WAREHOUSE AMARO_CI_WH TO ROLE zetta_reader;
 GRANT USAGE ON DATABASE ADMIN_DB TO ROLE zetta_reader;
 GRANT USAGE ON SCHEMA ADMIN_DB.PUBLIC TO ROLE zetta_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA ADMIN_DB.PUBLIC TO ROLE zetta_reader;
-GRANT ROLE zetta_reader TO USER STEVE;
+GRANT ROLE zetta_reader TO USER ANALYST;
 ```
 
 ---
@@ -130,7 +130,7 @@ curl -s -X POST http://127.0.0.1:4800/mcp \
             "account":"ADPEVGY-OLB41490",
             "auth":"pat",
             "token":"'"$SNOWFLAKE_PAT"'",
-            "user":"STEVE",
+            "user":"ANALYST",
             "role":"SYSADMIN",
             "warehouse":"AMARO_CI_WH",
             "database":"ADMIN_DB",

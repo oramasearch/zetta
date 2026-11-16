@@ -386,7 +386,7 @@ TEST(ParquetStore, AnUnreadablePageIsAFailedHandleWithAReason) {
     EXPECT_EQ(store.id_at(199), "row-199");
 }
 
-// LSR-167: a body whose last row group stores the int64 column `n` under a
+// a body whose last row group stores the int64 column `n` under a
 // different physical type (boolean) than its schema leaf. The page that holds it
 // is a failed handle with a reason; the pages before it still read.
 TEST(ParquetStore, AChunkWhosePhysicalTypeDisagreesWithTheSchemaIsAFailedHandle) {

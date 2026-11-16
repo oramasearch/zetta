@@ -219,7 +219,7 @@ TEST_F(PubSubCapabilities, ReadScopeFiltersEachConcreteTopicAndBoundsGovernPubli
     EXPECT_FALSE(call("publish_event", {{"topic", "allowed.orders"}, {"payload", "two"}, {"priority", 10}}).ok);
 }
 
-// LSR-259 (#1432): an inbox is not a topic of its namespace. A topic-prefix grant on `agent.` does not
+// #1432: an inbox is not a topic of its namespace. A topic-prefix grant on `agent.` does not
 // reach the exposed inbox `inbox:agent.viewer`; an explicit grant on `inbox:agent.viewer` does.
 TEST_F(PubSubCapabilities, ATopicPrefixGrantDoesNotCoverAnInbox) {
     ASSERT_TRUE(call("create_topic", {{"topic", "inbox:agent.viewer"}, {"settings", {{"exposed", true}}}}).ok);

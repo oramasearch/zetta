@@ -1,7 +1,7 @@
 # The object capability
 
 Refs [#1005](https://github.com/oramasearch/zetta/issues/1005) (the decided specification is the
-issue's 2026-10-03 comment). Built for lake: liquid-bridge decision 54 places each lake workspace's
+issue's 2026-10-03 comment). Built for lake: lake places each workspace's
 liquid store — its repositories, Drive, models, datasets and tenant OCI layers — in that
 workspace's Zetta, and lake's liquid `store_backend` writes it through this capability (lake
 `docs/architecture/workspace-storage-plan.md`, "The Zetta object capability").

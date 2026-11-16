@@ -186,5 +186,5 @@ datasets. From there:
 ## Related
 
 - [`scripts/README.md`](../../scripts/README.md) — the generators' reference.
-- **rlvr-training-data** skill — the method; `homer6/blender-rl` — the reference to reproduce.
+- **rlvr-training-data** skill — the method; blender-rl (an earlier RLVR prototype, not public) — the reference to reproduce.
 - #866 (this pipeline) · #863 (base training) · #853 (fork) · #862 (demo).

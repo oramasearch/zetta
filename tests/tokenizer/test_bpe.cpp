@@ -244,7 +244,7 @@ TEST(Bpe, AccessorsAndEmptyVocab) {
 
 }  // namespace
 
-// LSR-258 (#1431): a vocabulary whose ids run far past its size is refused instead of sizing the
+// #1431: a vocabulary whose ids run far past its size is refused instead of sizing the
 // inverse table by the largest id (an id near INT_MAX would allocate gigabytes).
 TEST(Bpe, AVocabularyIdFarPastItsSizeIsRefused) {
     std::string error;

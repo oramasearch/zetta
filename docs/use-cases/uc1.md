@@ -39,7 +39,7 @@ UC-1 only makes sense inside Orama Zetta's product thesis. Five framing decision
 
 5. **Correct by construction.** Generating a workflow is easy; generating a *correct* one is the product. Every execution graph is validated (schema, leakage, point-in-time) and must pass a **correctness gate** before it can deploy. That gate is the line between Orama Zetta and "n8n with an LLM bolted on." (Blueprint: [FEAT-3 / #134](https://github.com/oramasearch/zetta/issues/134).)
 
-Product framing in depth: [`docs/projects/orama-platform-2/one-pager.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md) and [`vision-and-strategy.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/vision-and-strategy.md).
+Product framing in depth: [`../product/vision.md`](../product/vision.md).
 
 ---
 
@@ -233,13 +233,13 @@ layer 2   FEAT-3 correctness gate · FEAT-5 run + monitor   (← FEAT-2)
 layer 3   UC-1 churn                        (← FEAT-3, FEAT-4, FEAT-5, FEAT-6, FEAT-9)
 ```
 
-The **run loop** (being polished in [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10)): launch a layer → each task runs in its own worktree and opens a PR → **the plan pauses for PR review** → after review/merge, resume → launch the next ready layer → … → UC-1 ships. The **PR-review gate** is the deliberate stop/resume point: a human reviews each completed task before its dependents proceed.
+The **run loop**: launch a layer → each task runs in its own worktree and opens a PR → **the plan pauses for PR review** → after review/merge, resume → launch the next ready layer → … → UC-1 ships. The **PR-review gate** is the deliberate stop/resume point: a human reviews each completed task before its dependents proceed.
 
 ---
 
 ## 12. UC-1 as the catalog exemplar
 
-Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one with the **`add-use-case`** skill + the [`adding-a-use-case` runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md): it generates a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
+Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one by the steps in [`README.md`](README.md): they start from a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
 
 ---
 
@@ -247,7 +247,7 @@ Churn is the template for the entire catalog. The next use case — fraud/anomal
 
 - **Blueprint / issue:** [`oramasearch/zetta#264`](https://github.com/oramasearch/zetta/issues/264) (UC-1) · grooming epic [#279](https://github.com/oramasearch/zetta/issues/279) · the consolidated context comment on #264.
 - **Framing decisions:** [ADR-23 use-case-driven](https://github.com/oramasearch/zetta/issues/290) · [ADR-25 AI-projects-central / data-project-management](https://github.com/oramasearch/zetta/issues/292) · [ADR-26 generic AI-project types](https://github.com/oramasearch/zetta/issues/293) · [GLO-14 AI project](https://github.com/oramasearch/zetta/issues/294).
-- **Product docs:** [`projects/orama-platform-2/`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/orama-platform-2/) (one-pager, vision-and-strategy) · the zetta module conventions [`modules/zetta/docs/product/orama-zetta.md`](https://github.com/oramasearch/zetta/blob/main/docs/product/orama-zetta.md).
-- **Catalog growth:** [`runbooks/adding-a-use-case.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md) + the `add-use-case` skill.
-- **Build infra:** worktree plan #11 · the run-loop ticket [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10).
+- **Product docs:** [`../product/orama-zetta.md`](../product/orama-zetta.md) · [`../product/vision.md`](../product/vision.md).
+- **Catalog growth:** [`README.md`](README.md).
+- **Build infra:** worktree plan #11.
 - **Reference implementation:** `churn_features.sql`, `train_churn_xgb.py`, `churn_playbook.py`, `churn_env_design.md` (incl. §8 the deferred Retention Investigation Agent) — to be committed into the build.

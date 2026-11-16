@@ -1,7 +1,7 @@
 # Design system (headed GUI)
 
 The headed app follows the **Orama Studio design system** — the visual language
-imported from the design repo (oramasearch/orama-design; the import ledger is
+imported from the Orama design repository (the import ledger is
 docs/product/experience/design-sync.md, #875). This page is the zetta-GUI
 projection of it: the exact tokens, the typography and copy rules, the accent
 discipline, and the component grammar **as implemented in
@@ -9,7 +9,7 @@ discipline, and the component grammar **as implemented in
 whenever you add or change GUI.
 
 > **Canonical source.** The design system lives in the private
-> `oramasearch/orama-design` repo (`packages/design-system/` — Storybook is the
+> the design repository (`packages/design-system/` — Storybook is the
 > visual source of truth; DTCG tokens under `tokens/dtcg/`). When the design
 > system and this page diverge on a *token value*, the design system wins;
 > sync it via the studio-design-sync skill and record it in the ledger. This page is

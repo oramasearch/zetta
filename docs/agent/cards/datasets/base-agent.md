@@ -23,7 +23,7 @@ pass.**
 
 ## Method — blender-rl (grow by generation, gate by verification)
 
-Reproduces (does not embed) `homer6/blender-rl`'s dataset strategy:
+Reproduces (does not embed) blender-rl (an earlier RLVR prototype, not public)'s dataset strategy:
 
 - **The agent emits an ACTION** — `{message, tool_calls, execution_graph}` (agent/action.hpp) —
   the pipeline it builds. This mirrors blender-rl's "the model emits Blender Python"; the

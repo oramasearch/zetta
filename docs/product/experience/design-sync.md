@@ -1,25 +1,20 @@
 # design-sync — the Studio design import ledger
 
-The record of every sync between Daniel's design repo (`oramasearch/orama-design`)
-and zetta's two Studio surfaces — the web app (`src/core/api/web_ui.cpp`) and the
+The record of every sync between the Orama design repository (not public) and
+zetta's two Studio surfaces — the web app (`src/core/api/web_ui.cpp`) and the
 desktop GUI (`src/gui/`). One entry per sync wave: the pinned design ref, what
 moved, and what was deliberately skipped (with the reason, so the next sync
-doesn't re-litigate it). Workflow + translation tables: the **studio-design-sync**
-skill (`.claude/skills/studio-design-sync/`). Reference inventory of the design
-repo: `docs/projects/orama-studio-marketplace/design-index.md` in
-https://github.com/oramasearch/orama-bridge.
+doesn't re-litigate it).
 
 Boundaries: rendering only — no new JSON/wire formats, no new behavior paths.
 The web app stays C++ server-rendered (minimal hand-written JS only where the
 interaction demands it); the desktop is SDL3-first with ImGui as the temporary
-crutch (repo `CLAUDE.md` → "Orama Studio — the product surface this engine
-wears").
+crutch.
 
 ## 2026-08-05 — Reports, both surfaces ([#960](https://github.com/oramasearch/zetta/issues/960) item 4)
 
-**Source pin:** `oramasearch/orama-design` `feat/reports-surface` @ `4621d87`
-(2026-08-04) — the Reports screens from
-[`oramasearch/orama-design#28`](https://github.com/oramasearch/orama-design/pull/28).
+**Source pin:** the design repository `feat/reports-surface` @ `4621d87`
+(2026-08-04) — the Reports screens.
 
 **What moved:**
 
@@ -80,7 +75,7 @@ Two consequences the fixture never exercised:
 
 ## 2026-07-23 — web app (#874)
 
-**Source pin:** `oramasearch/orama-design` `main` @ `5bdbc27` — live version
+**Source pin:** the design repository `main` @ `5bdbc27` — live version
 "Orama Studio, July 23rd", design system `@orama/design-system` v0.3.0.
 
 **What moved:**
@@ -160,7 +155,7 @@ surfaces, untouched.
 
 ## 2026-07-23 — desktop GUI (#875)
 
-**Source pin:** same as the web import — `oramasearch/orama-design` `main` @
+**Source pin:** same as the web import — the design repository `main` @
 `5bdbc27`, design system v0.3.0. The GUI inherits the token decisions the web
 import recorded.
 
@@ -187,7 +182,7 @@ import recorded.
   Verification. Window title, About dialog, and menu are **Orama Studio**
   (the About copy states Studio is the surface of the Zetta platform).
 - **Docs**: `docs/gui/design-system.md` reground on the Studio system
-  (canonical source = `oramasearch/orama-design` `packages/design-system/`);
+  (canonical source = the design repository `packages/design-system/`);
   the coral-era wording swept from every `docs/gui/` page and the rule-cards.
 
 **Second pass — the Studio home** (mirrors the web): `draw_home` is
@@ -220,7 +215,7 @@ on explicit nulls in system rows could kill the node from a render path — all
 row reads are now null-safe (the no-exceptions boundary applies to renderers
 too).
 
-**Architecture revision (Steve, 2026-07-24).** The web surface adopts the
+**Architecture revision (2026-07-24).** The web surface adopts the
 design repo's **React Studio app as the real web UI**: screens wired to the
 `/v1` JSON surface (the capability registry stays the only behavior path),
 the node serves the built bundle (built in the design repo — no npm enters
