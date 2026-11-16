@@ -77,6 +77,11 @@ public:
     // path is frictionless while a selected key demonstrates the deny path.
     void set_session_key(std::string key_id) { session_key_ = std::move(key_id); }
     const std::string& session_key() const { return session_key_; }
+    // A signed-in user instead of a key (LSR-261, #1434): every statement is authorized for that
+    // user, runs as that user and is audited under the user's id, as a key session's are under
+    // the key. Takes precedence over a session key.
+    void set_session_user(std::string user_id) { session_user_ = std::move(user_id); }
+    const std::string& session_user() const { return session_user_; }
 
     // The database unqualified SQL names resolve against (mirrors
     // `QueryService::run`'s current-database argument). Also the audit target for
@@ -109,6 +114,7 @@ private:
     zetta::pipeline::CorrectnessGate gate_;
     GraphRunner graph_runner_;  // how a gate-passed sim-Python graph runs (default: run_graph)
     std::string session_key_;  // "" = unauthenticated local session
+    std::string session_user_;  // a signed-in user (#1434); "" = none
     std::string database_;     // current database for unqualified SQL names
 };
 

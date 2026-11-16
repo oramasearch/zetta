@@ -112,3 +112,12 @@ older one `not_reporting`. Roll a cluster's members within a short window.
 A new kind of entity directory: give it a marker check in `entity_kind` and a row above; a new
 top-level directory: a branch in `measure_storage`. Keep `storage_kinds()` the one list, so the
 output schema and lake's mapping follow it.
+
+## Who sees what (LSR-257, #1430)
+
+`storage_usage` describes a node's whole disk, so only an administrator (`api:cluster_admin`) or
+the local session gets all of it. Anyone else gets only the buckets it holds `objects:read` on, the
+rule the bucket listing applies. Every kind is still listed, at 0, and `total_bytes` is the sum of
+the buckets shown. The same holds for every member in `scope: "cluster"`, and for the cluster
+total. Before #1430 any caller of the tool read every bucket's name and size.
+

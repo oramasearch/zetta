@@ -4392,8 +4392,9 @@ struct ApiServer::Impl {
                     }
                     zetta::query::QueryService query_service(node, cluster);
                     zetta::repl::GovernedConsole console(node, query_service);
-                    // Enforcement is done above by authorize_user; the console runs unkeyed
-                    // (audited as the local web session) but still gates + audits every run.
+                    // The run is the signed-in user's (#1434): authorized, executed and audited
+                    // as that user, not as the trusted local session.
+                    console.set_session_user(user_id);
                     const zetta::repl::Result result =
                         console.run(zetta::repl::Frontend::SimPython, route_decision.source);
                     nlohmann::json body;

@@ -219,6 +219,28 @@ TEST_F(PubSubCapabilities, ReadScopeFiltersEachConcreteTopicAndBoundsGovernPubli
     EXPECT_FALSE(call("publish_event", {{"topic", "allowed.orders"}, {"payload", "two"}, {"priority", 10}}).ok);
 }
 
+// LSR-259 (#1432): an inbox is not a topic of its namespace. A topic-prefix grant on `agent.` does not
+// reach the exposed inbox `inbox:agent.viewer`; an explicit grant on `inbox:agent.viewer` does.
+TEST_F(PubSubCapabilities, ATopicPrefixGrantDoesNotCoverAnInbox) {
+    ASSERT_TRUE(call("create_topic", {{"topic", "inbox:agent.viewer"}, {"settings", {{"exposed", true}}}}).ok);
+    ASSERT_TRUE(call("create_topic", {{"topic", "agent.events"}, {"exposed", true}}).ok);
+    ASSERT_TRUE(node.create_role("agent-topics"));
+    ASSERT_TRUE(node.grant_permissions("agent-topics", {"mcp:call"}));
+    ASSERT_TRUE(node.grant_scoped_permissions("agent-topics", {"topics:read"},
+        zetta::governance::Resource::topic("agent.")));
+    auto user = node.create_user("agent-topics-user");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("agent-topics")->id()));
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    EXPECT_TRUE(registry.call("browse_topic", {{"topic", "agent.events"}}, context).ok);
+    EXPECT_EQ(registry.call("browse_topic", {{"topic", "inbox:agent.viewer"}}, context).error.code,
+              "unauthorized");
+    ASSERT_TRUE(node.grant_scoped_permissions("agent-topics", {"topics:read"},
+        zetta::governance::Resource::topic("inbox:agent.viewer")));
+    EXPECT_TRUE(registry.call("browse_topic", {{"topic", "inbox:agent.viewer"}}, context).ok);
+}
+
 TEST_F(PubSubCapabilities, IdlePollsAddNoSummariesAndDenialsStayPerCall) {
     ASSERT_TRUE(call("create_topic", {{"topic", "idle"}, {"exposed", true}}).ok);
     const auto before = node.audit_event_count();

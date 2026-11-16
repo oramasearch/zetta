@@ -3,6 +3,8 @@
 // shows in that bucket.
 #include <gtest/gtest.h>
 
+#include <set>
+
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -19,6 +21,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/storage_census.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/util/uuid.hpp"
@@ -62,6 +65,46 @@ TEST(StorageCapabilities, ANodeAnswersItsDiskByKind) {
     EXPECT_GE(after.value["total_bytes"].get<std::uint64_t>(),
               before.value["total_bytes"].get<std::uint64_t>() + 4096);
     EXPECT_TRUE(registry.find("storage_usage")->blocks) << "walks the disk off the owner loop";
+    node.stop();
+}
+
+// LSR-257 (#1430): a caller who is not an administrator sees only the buckets it may read, and no
+// per-kind totals of the node's disk.
+TEST(StorageCapabilities, ACallerSeesOnlyTheBucketsItMayRead) {
+    zetta::test::TempDir dir;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}, &replication};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    for (const char* bucket : {"photos", "secret"}) {
+        std::filesystem::create_directories(dir.path() / "objects" / bucket);
+        std::ofstream(dir.path() / "objects" / bucket / "blob", std::ios::binary)
+            << std::string(1024, 'x');
+    }
+    node.create_role("photographer");
+    ASSERT_TRUE(node.grant_scoped_permissions("photographer", {"objects:read"},
+                                              zetta::governance::Resource::bucket("photos")));
+    ASSERT_TRUE(node.grant_scoped_permissions("photographer", {"mcp:call"},
+                                              zetta::governance::Resource::tool("storage_usage")));
+    auto user = node.create_user("photo-user");
+    ASSERT_TRUE(user);
+    auto role = node.find_role("photographer");
+    ASSERT_TRUE(role);
+    node.assign_role(user->id(), role->id());
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    auto trace = zetta::observability::make_root_trace();
+    zetta::api::ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    const auto seen = registry.call("storage_usage", nlohmann::json::object(), context);
+    ASSERT_TRUE(seen.ok) << seen.error.message;
+    std::set<std::string> buckets;
+    for (const auto& bucket : seen.value["buckets"]) buckets.insert(bucket["bucket"]);
+    EXPECT_EQ(buckets, std::set<std::string>{"photos"});
+    for (const auto& [kind, bytes] : seen.value["kinds"].items()) {
+        EXPECT_EQ(bytes.get<std::uint64_t>(), 0U) << kind;
+    }
+    EXPECT_EQ(seen.value["total_bytes"].get<std::uint64_t>(), seen.value["buckets"][0]["bytes"].get<std::uint64_t>());
     node.stop();
 }
 

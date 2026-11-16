@@ -164,7 +164,15 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
     std::string actor = "(local)";
     bool permitted = true;
     std::string deny_reason;
-    if (!session_key_.empty()) {
+    // The principal steps and SQL run as: the user, else the key, else the trusted local session.
+    const bool as_user = !session_user_.empty();
+    const std::string principal = as_user ? session_user_ : session_key_;
+    if (as_user) {
+        actor = session_user_;
+        const zetta::governance::AccessDecision decision = node_.authorize_user(session_user_, op);
+        permitted = decision.allowed;
+        if (!permitted) deny_reason = decision.reason;
+    } else if (!session_key_.empty()) {
         actor = session_key_;
         const auto key = node_.find_access_key(session_key_);
         if (!key) {
@@ -200,7 +208,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
         record(false, "console " + frontend_name + " denied · " + summary);
         return Result::failure(
             "blocked: " + (deny_reason.empty() ? "not permitted" : deny_reason) +
-            " — key '" + session_key_ + "' lacks " +
+            (as_user ? " — user '" + session_user_ + "' lacks " : " — key '" + session_key_ + "' lacks ") +
             std::string(to_string(op.domain)) + ":" + op.action);
     }
 
@@ -211,9 +219,9 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
             // authorized on its own (sql:write / sql:ddl, #1229) — the gate
             // above only proves the key may query at all.
             Result result = sql_result(
-                session_key_.empty()
+                principal.empty()
                     ? query_.run(source, database_)
-                    : query_.acting_as(session_key_, /*acting_is_user=*/false)
+                    : query_.acting_as(principal, /*acting_is_user=*/as_user)
                           .run(source, database_));
             record(true, "console sql · " + summary +
                              (result.ok() ? "" : " · error: " + result.error));
@@ -246,7 +254,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
                 graph_runner_ ? graph_runner_(lowered.graph)
                               : node_.run_graph(lowered.graph, {}, {},
                                                 zetta::pipeline::RunPrincipal{
-                                                    session_key_, /*acting_is_user=*/false});
+                                                    principal, /*acting_is_user=*/as_user});
             Result result = sim_python_result(lowered.graph, exec);
             record(true, "console sim-python · " + summary + " · run " +
                              (exec.run ? short_id(exec.run->id()) : "-") +
