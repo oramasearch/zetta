@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 
 // --- model_health (#983, the first Monitor capability) --------------------------------------
 //

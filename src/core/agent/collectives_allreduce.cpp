@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/collectives_allreduce.hpp"
 
 #include <vector>

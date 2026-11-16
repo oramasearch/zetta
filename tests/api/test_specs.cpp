@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The spec index (#646, docs/api/specs-index.md): /v1/specs +
 // list_specs/get_spec serve the OpenAPI document plus EVERY JSON Schema in
 // the system — capability input/output schemas and all schema-as-code

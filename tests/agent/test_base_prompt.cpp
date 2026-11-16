@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Orama Studio auto-AI agent's canonical system prompt + the shared train/inference framing
 // (#873). One source of truth (base_prompt.cpp) is used by the SFT render and by agent::respond,
 // so training and inference cannot drift.

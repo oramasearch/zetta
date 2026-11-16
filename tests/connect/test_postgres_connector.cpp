@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Postgres source connector (#892), validated against a real Postgres.
 //
 // Compiled only with ZETTA_WITH_POSTGRES (the libpqxx submodule present). Each

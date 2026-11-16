@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "gui/repl_console.hpp"
 
 #include "gui/app_internal.hpp"

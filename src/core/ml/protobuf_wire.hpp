@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The protobuf wire format, read and written by hand (lake#681). The engine reads

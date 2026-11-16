@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/repl/governed_console.hpp"
 
 #include <algorithm>

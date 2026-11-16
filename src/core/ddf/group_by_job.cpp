@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ddf/group_by_job.hpp"
 
 #include <string>

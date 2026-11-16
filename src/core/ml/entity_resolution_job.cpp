@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/entity_resolution_job.hpp"
 
 #include <algorithm>

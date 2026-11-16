@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Traces view (#640, docs/gui/traces.md): the per-operation "what
 // happened" pane over the node's span ring (Node::span_recorder() — the SAME
 // source as system.traces / system.spans / get_trace, RULE-7). Left: recent

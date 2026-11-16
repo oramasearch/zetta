@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/rendezvous_placement.hpp"
 
 #include <algorithm>

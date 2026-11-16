@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "lake_sql_protocol.hpp"
 
 #include "write_words.hpp"

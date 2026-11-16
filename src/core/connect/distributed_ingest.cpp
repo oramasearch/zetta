@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/distributed_ingest.hpp"
 
 #include <algorithm>

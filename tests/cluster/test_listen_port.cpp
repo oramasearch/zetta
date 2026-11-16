@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Regression tests for #738: a fixed --listen port must be honored exactly —
 // bound as requested (even immediately after a restart, while the previous
 // process's sockets linger in TIME_WAIT) or not bound at all, never silently

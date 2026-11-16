@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The remote consent challenge protocol (#621; docs/api/consent.md): a
 // consent-gated cloud capability NEVER executes on first call — it issues a
 // one-time challenge naming exactly what would be read/run — and only a

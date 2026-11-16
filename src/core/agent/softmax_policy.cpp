@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/softmax_policy.hpp"
 
 #include <algorithm>

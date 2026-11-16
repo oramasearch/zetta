@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Report local checkpoints and corpora that are NOT published to the private HF org.
 
 The publish rule already lived in CLAUDE.md and the hf-ops skill, and was still missed for three

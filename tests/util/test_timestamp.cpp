@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta::util timestamp round-trip + boundary tests (#629): now_iso8601 /
 // iso8601_seconds_ago write the fixed-width UTC shape, and
 // parse_iso8601_seconds is the non-throwing inverse that powers duration math

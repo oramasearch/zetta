@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Saved connections (#827, docs/data/connector-query.md): the replicate-to-all
 // credential store, its boundary, and — the load-bearing property — that the
 // token is stored only sealed (#1230) and reaches NO read surface.

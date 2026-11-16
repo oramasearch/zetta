@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/mlx_qwen.hpp"
 
 #if defined(ZETTA_WITH_MLX)

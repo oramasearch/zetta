@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The safetensors binary format (#555; docs/agent/README.md) — the standard

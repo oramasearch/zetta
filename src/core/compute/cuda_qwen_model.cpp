@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/cuda_qwen_model.hpp"
 
 #include <span>

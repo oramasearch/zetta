@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/solutions/solution_execution.hpp"
 
 #include <cstdint>

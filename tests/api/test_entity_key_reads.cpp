@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // #1202: Run and Model reads leave a text entity-key mapping's entries out by
 // default. The entries list every distinct id of the dataset, so on 1,500 rows
 // get_run answered 222 KB and get_model 192 KB over MCP; a read now carries

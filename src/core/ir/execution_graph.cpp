@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ir/execution_graph.hpp"
 
 #include <utility>

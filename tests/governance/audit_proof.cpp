@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Native process-isolated audit replication/RSS proof for #1164.
 #include <algorithm>
 #include <chrono>

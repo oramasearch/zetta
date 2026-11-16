@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/deployment_target.hpp"
 
 #include <array>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Clerk JWT verification (#889). Generates an RSA key in-test, signs an RS256
 // JWT, serves the matching JWKS through an injected transport, and asserts the
 // full verify path — plus the failure closes (wrong issuer, expired, bad

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Protocol-layer (loopback HTTP) coverage of the REST rendering (#618,
 // docs/api/rest-openapi.md): real GETs and POSTs against /v1/<name> — the
 // curl surface — with the test thread playing the owning loop (drain()), the

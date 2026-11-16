@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Public entry point for the reusable Corosio transport library (#1283).

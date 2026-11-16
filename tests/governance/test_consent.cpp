@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The consent ledger (#621; docs/api/consent.md): one-time challenges for
 // cloud-touching actions — pending until a distinctly-privileged decision,
 // consumable exactly once, expiring on a TTL, never persisted or replicated.

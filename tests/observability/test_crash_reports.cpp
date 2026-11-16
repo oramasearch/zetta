@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Crash reports (docs/architecture/observability.md, #640): a fatal signal
 // writes <data_dir>/crashes/<uuid>.json (stacktrace + recent spans + version
 // + platform) before the process dies; the files are validated when read back

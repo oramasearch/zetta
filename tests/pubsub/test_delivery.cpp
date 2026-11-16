@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Delivery option layering and governance bounds (#1028, #1029).
 #include <gtest/gtest.h>
 

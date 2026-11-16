@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta::util::fuzzy_score — the command palette's ranking primitive (#625).
 // Pure function, so the palette's matching behaviour is pinned here headless.
 

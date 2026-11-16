@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/partition_body.hpp"
 
 #include <cstddef>

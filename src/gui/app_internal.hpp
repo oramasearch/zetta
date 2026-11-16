@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Shared design-system tokens + small render helpers for the headed GUI, split

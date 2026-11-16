@@ -1,0 +1,444 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "zetta-dd6f7dfaf1f1",
+  "documentNamespace": "https://github.com/oramasearch/zetta/sbom/dd6f7dfaf1f1f2bb991f680fd5df00aa07ad7b30",
+  "creationInfo": {
+    "created": "2026-11-16T06:12:08Z",
+    "creators": [
+      "Organization: OramaSearch, Inc.",
+      "Tool: tools/sbom.py",
+      "Tool: syft"
+    ],
+    "licenseListVersion": "3.29",
+    "comment": "Made from source commit dd6f7dfaf1f1f2bb991f680fd5df00aa07ad7b30 by tools/sbom.py."
+  },
+  "documentDescribes": [
+    "SPDXRef-DocumentRoot"
+  ],
+  "packages": [
+    {
+      "name": "automerge-cpp",
+      "SPDXID": "SPDXRef-Component-automerge-cpp-ecbb1ebb01949fc1",
+      "versionInfo": "4dd795513510ae2c58bacd384c3d8fd98f523123",
+      "downloadLocation": "git+https://github.com/homer6/automerge-cpp.git@4dd795513510ae2c58bacd384c3d8fd98f523123",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "comment": "Steve Sperandeo. How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/homer6/automerge-cpp",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/homer6/automerge-cpp@4dd795513510ae2c58bacd384c3d8fd98f523123"
+        }
+      ]
+    },
+    {
+      "name": "beast2",
+      "SPDXID": "SPDXRef-Component-beast2-56975ea75034a82d",
+      "versionInfo": "fb0a9c8dc860590bd13cb2d7afd3e2232291ff19",
+      "downloadLocation": "git+https://github.com/cppalliance/beast2.git@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSL-1.0",
+      "comment": "How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/cppalliance/beast2",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/cppalliance/beast2@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19"
+        }
+      ]
+    },
+    {
+      "name": "Boost",
+      "SPDXID": "SPDXRef-Component-Boost-104d102be3d8897c",
+      "versionInfo": "1.91.0",
+      "downloadLocation": "https://github.com/boostorg/boost",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSL-1.0",
+      "comment": "How it is used: fetched at build (CMake FetchContent), linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/boostorg/boost",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/boostorg/boost@1.91.0"
+        }
+      ]
+    },
+    {
+      "name": "capy",
+      "SPDXID": "SPDXRef-Component-capy-f065864a31964254",
+      "versionInfo": "ce1c7d710c4baaeeddb57fa101707c610f6eb975",
+      "downloadLocation": "git+https://github.com/cppalliance/capy.git@ce1c7d710c4baaeeddb57fa101707c610f6eb975",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSL-1.0",
+      "comment": "How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/cppalliance/capy",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/cppalliance/capy@ce1c7d710c4baaeeddb57fa101707c610f6eb975"
+        }
+      ]
+    },
+    {
+      "name": "corosio",
+      "SPDXID": "SPDXRef-Component-corosio-e77df9d384251afc",
+      "versionInfo": "be51422484784a35eef412934e4d8fd3511e5918",
+      "downloadLocation": "git+https://github.com/oramasearch/corosio.git@be51422484784a35eef412934e4d8fd3511e5918",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSL-1.0",
+      "comment": "Orama's fork of cppalliance/corosio. How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/oramasearch/corosio",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/oramasearch/corosio@be51422484784a35eef412934e4d8fd3511e5918"
+        }
+      ]
+    },
+    {
+      "name": "Dear ImGui",
+      "SPDXID": "SPDXRef-Component-Dear-ImGui-7597987723e4d3fe",
+      "versionInfo": "v1.91.5",
+      "downloadLocation": "https://github.com/ocornut/imgui",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "comment": "How it is used: fetched at build, linked into the desktop app. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/ocornut/imgui",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/ocornut/imgui@v1.91.5"
+        }
+      ]
+    },
+    {
+      "name": "Geist and Geist Mono",
+      "SPDXID": "SPDXRef-Component-Geist-and-Geist-Mono-8b01034c9fab7620",
+      "versionInfo": "as vendored",
+      "downloadLocation": "https://github.com/vercel/geist-font",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "OFL-1.1",
+      "comment": "assets/fonts. How it is used: vendored font files. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/vercel/geist-font",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/vercel/geist-font@as vendored"
+        }
+      ]
+    },
+    {
+      "name": "GoogleTest",
+      "SPDXID": "SPDXRef-Component-GoogleTest-64b5499d1e845e32",
+      "versionInfo": "v1.15.2",
+      "downloadLocation": "https://github.com/google/googletest",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "comment": "How it is used: fetched at build, tests only. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/google/googletest",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/google/googletest@v1.15.2"
+        }
+      ]
+    },
+    {
+      "name": "http",
+      "SPDXID": "SPDXRef-Component-http-358a9beabd5949fb",
+      "versionInfo": "af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4",
+      "downloadLocation": "git+https://github.com/oramasearch/http.git@af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSL-1.0",
+      "comment": "Orama's fork of cppalliance/http. How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/oramasearch/http",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/oramasearch/http@af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4"
+        }
+      ]
+    },
+    {
+      "name": "IBM Plex Sans and IBM Plex Mono",
+      "SPDXID": "SPDXRef-Component-IBM-Plex-Sans-and-IBM-Plex-Mono-9836f46bf5669da7",
+      "versionInfo": "as vendored",
+      "downloadLocation": "https://github.com/IBM/plex",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "OFL-1.1",
+      "comment": "assets/fonts. How it is used: vendored font files, embedded in the binaries. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/IBM/plex",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/IBM/plex@as vendored"
+        }
+      ]
+    },
+    {
+      "name": "json-schema-validator",
+      "SPDXID": "SPDXRef-Component-json-schema-validator-4136c15d3cbf1269",
+      "versionInfo": "2.4.0",
+      "downloadLocation": "https://github.com/pboettch/json-schema-validator",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "comment": "How it is used: fetched at build, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/pboettch/json-schema-validator",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/pboettch/json-schema-validator@2.4.0"
+        }
+      ]
+    },
+    {
+      "name": "libpqxx",
+      "SPDXID": "SPDXRef-Component-libpqxx-1a092f5d5ca86d6b",
+      "versionInfo": "853bc0a48f0327d8670c1c0855f7abf731046319",
+      "downloadLocation": "git+https://github.com/jtv/libpqxx.git@853bc0a48f0327d8670c1c0855f7abf731046319",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "comment": "How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/jtv/libpqxx",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/jtv/libpqxx@853bc0a48f0327d8670c1c0855f7abf731046319"
+        }
+      ]
+    },
+    {
+      "name": "nlohmann/json",
+      "SPDXID": "SPDXRef-Component-nlohmann-json-f8323928c60a9e33",
+      "versionInfo": "8167d2f64122c3ef7e5a0d9cab239fdba37aa54c",
+      "downloadLocation": "https://github.com/nlohmann/json",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "comment": "vendored by automerge-cpp, upstream/json. How it is used: header-only, through automerge-cpp. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/nlohmann/json",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/nlohmann/json@8167d2f64122c3ef7e5a0d9cab239fdba37aa54c"
+        }
+      ]
+    },
+    {
+      "name": "oramacore-cpp",
+      "SPDXID": "SPDXRef-Component-oramacore-cpp-956bcf2be0cc72dc",
+      "versionInfo": "f612ea8f6170d051eca55122c1cc2956649e0c66",
+      "downloadLocation": "git+https://github.com/oramasearch/oramacore-cpp.git@f612ea8f6170d051eca55122c1cc2956649e0c66",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "comment": "OramaSearch, Inc., released with this stack. How it is used: submodule, linked. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/oramasearch/oramacore-cpp",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/oramasearch/oramacore-cpp@f612ea8f6170d051eca55122c1cc2956649e0c66"
+        }
+      ]
+    },
+    {
+      "name": "SDL",
+      "SPDXID": "SPDXRef-Component-SDL-20bbedde24a83d4f",
+      "versionInfo": "release-3.2.0",
+      "downloadLocation": "https://github.com/libsdl-org/SDL",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Zlib",
+      "comment": "How it is used: fetched at build, linked into the desktop app. Listed in THIRD_PARTY_LICENSES.",
+      "homepage": "https://github.com/libsdl-org/SDL",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/libsdl-org/SDL@release-3.2.0"
+        }
+      ]
+    },
+    {
+      "name": "ubuntu",
+      "SPDXID": "SPDXRef-Image-ubuntu-6698ea6738a5d032",
+      "versionInfo": "24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "primaryPackagePurpose": "CONTAINER",
+      "comment": "Container base image (ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5), FROM in Dockerfile. Its own packages are in the image SBOM of each release image.",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:docker/ubuntu@sha256%3A2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5?tag=24.04"
+        }
+      ]
+    },
+    {
+      "name": "zetta",
+      "SPDXID": "SPDXRef-DocumentRoot",
+      "versionInfo": "dd6f7dfaf1f1",
+      "downloadLocation": "git+https://github.com/oramasearch/zetta.git",
+      "homepage": "https://github.com/oramasearch/zetta",
+      "filesAnalyzed": false,
+      "supplier": "Organization: OramaSearch, Inc.",
+      "originator": "Organization: OramaSearch, Inc.",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) 2026 OramaSearch, Inc.",
+      "primaryPackagePurpose": "SOURCE",
+      "comment": "The source tree of zetta. Packages found by syft in the files git tracks, plus the C and C++ components of THIRD_PARTY_LICENSES and the git submodules."
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Component-Boost-104d102be3d8897c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-Dear-ImGui-7597987723e4d3fe",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-Geist-and-Geist-Mono-8b01034c9fab7620",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-GoogleTest-64b5499d1e845e32",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-IBM-Plex-Sans-and-IBM-Plex-Mono-9836f46bf5669da7",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-SDL-20bbedde24a83d4f",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-automerge-cpp-ecbb1ebb01949fc1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-beast2-56975ea75034a82d",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-capy-f065864a31964254",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-corosio-e77df9d384251afc",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-http-358a9beabd5949fb",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-json-schema-validator-4136c15d3cbf1269",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-libpqxx-1a092f5d5ca86d6b",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-nlohmann-json-f8323928c60a9e33",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Component-oramacore-cpp-956bcf2be0cc72dc",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-DocumentRoot",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Image-ubuntu-6698ea6738a5d032",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
+    }
+  ]
+}

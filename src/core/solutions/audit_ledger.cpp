@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/solutions/audit_ledger.hpp"
 
 #include <fstream>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <atomic>
 #include <cstddef>
 #include <memory>

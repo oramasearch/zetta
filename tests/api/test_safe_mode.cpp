@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Safe mode per database (#1373; docs/api/safe-mode.md): a Zetta database or a
 // saved source connection carries a level — off, warn_writes, warn_all. A call
 // that would run a statement the level warns on is refused with

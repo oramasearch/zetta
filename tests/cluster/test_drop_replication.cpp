@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Multi-node DROP convergence (#838).
 //
 // Single-node drop tests prove nothing about replication: a `remove` looks fine

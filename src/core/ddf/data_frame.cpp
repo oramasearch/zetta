@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ddf/data_frame.hpp"
 
 #include <algorithm>

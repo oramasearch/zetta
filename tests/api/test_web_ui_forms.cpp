@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The web dashboard's capability dialogs (#827, docs/data/connector-query.md),
 // and its consent approval surface on Governance -> Consent requests (#999).
 //

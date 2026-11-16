@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The chaos harness (#842): an in-process 3–5 node mutual-TLS cluster that is

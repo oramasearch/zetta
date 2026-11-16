@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // storage_usage (docs/data/storage-census.md): what this node holds on its disk, by kind, for a
 // host that bills storage by kind (lake#658), or with `scope: "cluster"` every member's, summed
 // from the telemetry exchange (zetta#1259). A `blocks` entry: the registry authorizes and

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Fine-grained scoped grants (FEAT-9 / #747, epic #743 item 4): the object tiers
 // on Scope/ResourceKind (table / column / blob / MCP tool), the object-covering
 // decision, the ScopedGrant store on a role, and the executor's table denial +

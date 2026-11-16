@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // RBAC roles (FEAT-9 / #746, epic #743): the permission vocabulary, the
 // complete built-in admin/writer/reader sets reconciled idempotently on
 // bootstrap, custom roles created + edited via SQL and gated on roles:manage,

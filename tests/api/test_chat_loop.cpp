@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The #969 loop end to end: chat agent → proposal → approval → run → report → chat
 // introspection, through the real control surface.
 //

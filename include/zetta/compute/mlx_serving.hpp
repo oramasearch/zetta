@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Wire the fast Metal-GPU Qwen decode (MlxQwenInference, #555) into the agent's

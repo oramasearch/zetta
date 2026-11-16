@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // response_solution_facts — the projection that turns a response into gradeable facts, and with
 // it the anti-fabrication rule. This is the function that decides whether an answer is trustworthy,
 // so its edges are worth pinning directly rather than only through the corpus.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/secret_file.hpp"
 
 #include <fcntl.h>

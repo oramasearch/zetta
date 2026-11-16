@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/credential_seal.hpp"
 
 #include <algorithm>

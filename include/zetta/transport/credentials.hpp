@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Standard-library-only mutual-TLS credentials shared by the transport and

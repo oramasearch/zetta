@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // lake#654: a model made on its own, not only as one step of a project's
 // pipeline — trained from a dataset, a target and a methodology (train_model),
 // retrained (retrain_model), brought from a file (register_model), moved into a

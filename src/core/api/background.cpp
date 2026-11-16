@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/api/background.hpp"
 
 #include <algorithm>

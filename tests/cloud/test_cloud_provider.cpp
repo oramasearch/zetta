@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/cloud_provider.hpp"
 
 #include <gtest/gtest.h>

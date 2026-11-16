@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/transport/framed_stream.hpp"
 
 #include <boost/capy/buffers.hpp>

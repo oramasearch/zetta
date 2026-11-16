@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // A run an agent PROPOSED and nobody has approved yet (#969).

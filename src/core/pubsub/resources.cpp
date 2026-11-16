@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pubsub/resources.hpp"
 
 #include <algorithm>

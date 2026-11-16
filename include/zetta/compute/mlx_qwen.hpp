@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // A FUSED, native-MLX Qwen3 inference kernel (#555; docs/autograd/). The autograd

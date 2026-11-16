@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Canonical held-out metric names and their accepted aliases (#1217;
 // docs/ml/held-out-metrics.md).
 

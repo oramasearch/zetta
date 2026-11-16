@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Row-level security (FEAT-9 / #748, epic #743 item 5) — Postgres-style RLS: the
 // system.policies entity (create/find/drop + JSON boundary + replication), the
 // admin/local/legacy bypass decision, and the executor's predicate rewrite:

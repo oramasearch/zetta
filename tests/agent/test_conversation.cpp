@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The conversation primitive: an ordered, multi-party thread that an agent's history is READ from
 // rather than supplied. The properties under test are the ones that make multiplayer work and that
 // a two-party model would have hidden.

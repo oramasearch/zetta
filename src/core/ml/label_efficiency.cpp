@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/label_efficiency.hpp"
 
 #include <algorithm>

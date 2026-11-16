@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "record_log.hpp"
 
 #include <fcntl.h>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Corpus invariants — the rules that make the interaction corpus a well-designed, well-balanced
 // TRAINING SET rather than merely a large pile of valid JSON.
 //

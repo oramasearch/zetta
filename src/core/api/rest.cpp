@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The REST rendering of the capability registry (#618,
 // docs/api/rest-openapi.md): everything here is derived mechanically from the
 // registered entries — reads render as GET /v1/<name>, actions/jobs as

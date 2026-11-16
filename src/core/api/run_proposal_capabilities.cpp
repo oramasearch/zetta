@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Propose a run, then approve or reject it (#969; docs/pipeline/run-proposals.md).
 //
 // The chat agent's tools are read-only by design: a chat can describe the node but never

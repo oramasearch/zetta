@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Dispatch modes (D24) and resource detection (#1030, D11).
 #include <gtest/gtest.h>
 

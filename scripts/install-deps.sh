@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 #
 # install-deps.sh — install zetta's system build dependencies on macOS or
 # Ubuntu/Debian. The C++ libraries themselves come via CMake FetchContent

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Workspace network controls on the control surface (#1280/#1281,
 // docs/network/). Lake issues and revokes one least-privilege credential per
 // app Connection; zetta-tunnel writes validated records and Lake reads decoded

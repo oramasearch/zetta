@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The pub/sub facade end to end (#1027, #1028, #1029, #1030, #1031, #1032).
 #include <gtest/gtest.h>
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Generate the communications churn demo dataset — a synthetic customer-communications
 event log in the shape of a typical CRM and support warehouse table.
 

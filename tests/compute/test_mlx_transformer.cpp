@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 // The transformer building blocks, exercised on MLX. Compiles only under

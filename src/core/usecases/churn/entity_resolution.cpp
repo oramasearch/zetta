@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/usecases/churn/entity_resolution.hpp"
 
 #include <cctype>

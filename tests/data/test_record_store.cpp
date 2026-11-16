@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The keyed record store (#1231, docs/data/record-store.md): conditional writes,
 // secondary-index lists, retention, the node-local log (restart, torn tail,
 // compaction), the two-node linearizable path, anti-entropy catch-up, and the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/parquet/metadata.hpp"
 
 #include <cstddef>

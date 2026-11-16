@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The MCP prompts (#872): guided workflows over the tools. Pure JSON builders (no node), so
 // this exercises them directly — the same shapes prompts/list and prompts/get return.
 #include <gtest/gtest.h>

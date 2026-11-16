@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Protocol-layer (loopback HTTP) coverage of the embedded MCP server (#615) —
 // the layer-2 journeys of docs/testing/mcp-journeys.md: real JSON-RPC over a
 // real socket, with the test thread playing the owning loop (drain()).

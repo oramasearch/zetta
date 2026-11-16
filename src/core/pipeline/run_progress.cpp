@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/run_progress.hpp"
 
 #include "zetta/ir/step_kind.hpp"

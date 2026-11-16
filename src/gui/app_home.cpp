@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Home as a real dashboard (SCR-1, #629): the operator's first questions —
 // is the cluster healthy, what ran recently, which projects moved, is
 // anything blocked — answered from existing live read sources only

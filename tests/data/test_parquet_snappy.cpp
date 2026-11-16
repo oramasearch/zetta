@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Snappy raw-block decoder tests (the Parquet SNAPPY page codec, #507).
 //
 // We have no offline Snappy *compressor* in the build (ADR-17 forbids a foreign

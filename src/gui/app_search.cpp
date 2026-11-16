@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Search view (#641, #643): the GUI rendering of THE canonical search
 // entry point, Node::search — the same path the `search` MCP capability calls,
 // so the two surfaces can never diverge. Pick a registered Search index, type a

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "private_directory.hpp"
 
 #include <fcntl.h>

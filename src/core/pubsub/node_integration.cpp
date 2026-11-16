@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pubsub/node_integration.hpp"
 
 #include <chrono>

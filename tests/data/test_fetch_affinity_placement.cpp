@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Fetch-affinity placement (#833 section 6): the node that fetched a slice owns
 // the partitions it produced. The properties that matter are that placement is
 // NOT a hash of the partition (nothing moves after the write), that it stays

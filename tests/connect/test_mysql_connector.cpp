@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The native MySQL source connector (#895).
 //
 // Three layers, each without a MySQL installation:

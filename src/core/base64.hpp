@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Internal base64 (standard alphabet, '='-padded). Shared by the cluster

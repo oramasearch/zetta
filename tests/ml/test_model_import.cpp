@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // lake#681: models trained elsewhere (ONNX tree ensembles, XGBoost JSON and UBJSON,
 // LightGBM text) read into the engine's tree model, checked against the source
 // library's own predictions; and the engine's models written back out as ONNX.

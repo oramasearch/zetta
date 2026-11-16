@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/local_train_job.hpp"
 
 #include <cstdint>

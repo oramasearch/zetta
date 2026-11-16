@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/uplift_runner.hpp"
 
 #include <algorithm>

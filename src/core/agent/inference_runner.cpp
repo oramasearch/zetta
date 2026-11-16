@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Qwen serving-inference injection point storage (#555 serving). zetta-core
 // holds the installed runner; the MLX layer installs it (install_mlx_qwen_inference).
 // No MLX here — this TU never links libmlx (the module-split rule).

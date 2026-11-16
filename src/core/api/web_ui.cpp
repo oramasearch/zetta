@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/api/web_ui.hpp"
 
 #include <algorithm>

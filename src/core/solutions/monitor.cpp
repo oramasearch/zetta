@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/solutions/monitor.hpp"
 
 #include "zetta/cluster/replication.hpp"

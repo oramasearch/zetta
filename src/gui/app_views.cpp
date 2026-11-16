@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The view registry + navigation + sidebar (#628, docs/gui/architecture.md).
 // Each view is declared exactly once in the registry table below; the sidebar,
 // navigation, and the command palette (#625) all consume the same rows.

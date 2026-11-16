@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The MySQL source connector — the TCP/TLS driver (#895).
 //
 // The protocol itself is zetta-core's sans-I/O `MysqlClientSession`

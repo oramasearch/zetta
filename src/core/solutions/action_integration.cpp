@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/solutions/action_integration.hpp"
 
 #include <memory>

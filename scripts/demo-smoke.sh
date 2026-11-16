@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Drive the demo conversation against a running node and print what the agent actually says.
 #
 # This is the check that matters before showing anyone: the canary measures held-out cases WITH

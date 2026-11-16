@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The REST rendering + OpenAPI generation (#618, docs/api/rest-openapi.md):
 // the route table, query coercion, status mapping, and the OpenAPI document
 // are all derived mechanically from the capability registry — and

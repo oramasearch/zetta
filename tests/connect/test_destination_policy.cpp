@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta#1394: a URL a caller chose (an action connector's endpoint, a
 // solution's report delivery endpoint) may reach only public addresses unless the
 // node allows the class. The native HTTP client resolves the host, classifies each

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // AutoML studies on the control surface (#1138, #1158, #1207;
 // docs/ml/studies.md).
 

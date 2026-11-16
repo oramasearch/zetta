@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta#1390: a model's split feature indices and child indices are
 // checked against the model itself before anything scores or explains it.
 //

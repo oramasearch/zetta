@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/segmentation.hpp"
 
 #include <algorithm>

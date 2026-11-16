@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/autograd/transformer.hpp"
 
 #include <algorithm>

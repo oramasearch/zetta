@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta#1392: virtual tables never read around table grants, row-level
 // security or the connection-store refusal.
 //

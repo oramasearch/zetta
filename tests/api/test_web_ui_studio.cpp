@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Orama Studio design import into the web app (#874,
 // docs/product/experience/design-sync.md).
 //

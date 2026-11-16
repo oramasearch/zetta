@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // GUI-internal animation state for the distributed-algorithm-at-work overlay on

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/burst_identity.hpp"
 
 #include <utility>

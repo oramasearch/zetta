@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/local_provisioner.hpp"
 
 #include <string>

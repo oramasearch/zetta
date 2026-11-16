@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub on the control surface (#1033; decision D22 in
 // docs/plans/pubsub/decisions.md; docs/pubsub/exposure.md).
 //

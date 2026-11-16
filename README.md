@@ -374,3 +374,9 @@ distributed UC-1-at-scale capstone) — see [docs/testing/](docs/testing/README.
   core is portable (Linux builds and runs).
 
 Full details and troubleshooting: **[docs/build.md](docs/build.md)**.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Third-party components and their licenses are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md)
+(contributions come in under the [Contributor License Agreement](CLA.md)).

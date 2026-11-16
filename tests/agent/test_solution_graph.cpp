@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The generic facts ↔ pipeline bridge (#873): any solution facts build a real gradeable
 // pipeline whose extracted facts satisfy the same grader — the bridge that lets the whole
 // corpus (not just churn/search) carry a reference action the gate scores.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Who may read the system.* views (#766, docs/governance/system-catalog-access.md).
 //
 // Before #766 every system table was answered before any identity check, so a

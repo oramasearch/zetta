@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Zetta-to-Zetta peer-gateway acceptance (#1282): two nodes whose private
 // endpoints overlap form one cluster through opaque TCP forwarders. Their
 // node-to-node mutual TLS terminates only at the Zetta nodes, and CRDT gossip
