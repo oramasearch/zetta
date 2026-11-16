@@ -379,4 +379,4 @@ Full details and troubleshooting: **[docs/build.md](docs/build.md)**.
 
 MIT, see [LICENSE](LICENSE). Third-party components and their licenses are in
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md)
-(commits are signed off under the Developer Certificate of Origin).
+(contributions come in under the [Contributor License Agreement](CLA.md)).
