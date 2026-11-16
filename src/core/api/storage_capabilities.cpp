@@ -125,7 +125,7 @@ nlohmann::json buckets_json(const std::map<std::string, std::uint64_t>& buckets)
     return out;
 }
 
-// What of a census the caller may see (LSR-257, #1430). An administrator (or the local session)
+// What of a census the caller may see (#1430). An administrator (or the local session)
 // sees the node's whole disk; anyone else only the buckets it holds objects:read on, as the bucket
 // listing applies, and none of the per-kind totals, which describe the whole node.
 struct CensusView {

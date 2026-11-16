@@ -200,7 +200,7 @@ to add behind the [Snappy](parquet-snappy.md) per-page seam when a target file
 needs it; driving the reader from a deployed graph / `ddf` `ComputeJob` is a later
 slice.
 
-## Bounds on what a file's counts can allocate (LSR-252, #1425)
+## Bounds on what a file's counts can allocate (#1425)
 
 A file chooses its own footer and page counts, so none of them is trusted to size an allocation:
 

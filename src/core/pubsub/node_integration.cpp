@@ -49,7 +49,7 @@ public:
             // Global grants cover every topic; scoped-only grants cover their prefix.
             std::string name = target.name;
             if (!name.empty() && name.back() == '*') name.pop_back();
-            // An inbox is its own resource (LSR-259, #1432): `inbox:<name>`, which no topic
+            // An inbox is its own resource (#1432): `inbox:<name>`, which no topic
             // prefix covers (an address name never holds ':'), so a grant on a topic namespace
             // never reaches an inbox in it. An inbox is granted explicitly, on `inbox:<name>`.
             if (target.kind == "inbox") name = "inbox:" + name;

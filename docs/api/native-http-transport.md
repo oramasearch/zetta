@@ -145,7 +145,7 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
   natively ([`connect/model_fetch.hpp`](../../include/zetta/connect/model_fetch.hpp)):
   `max_redirects` follows up to N `Location` hops (dropping the secret headers on a
   hop to another origin: another scheme, host or port, compared case-insensitively for the
-  host, LSR-256 #1429; so a bearer never reaches a different origin — a HuggingFace LFS
+  host, #1429; so a bearer never reaches a different origin — a HuggingFace LFS
   URL 302-redirects to a CDN); `download_sink` streams the 2xx body to a
   caller-owned destination, taking precedence over `download_to_path` (the
   legacy path-based option). A sink returning false fails the exchange.

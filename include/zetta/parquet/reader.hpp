@@ -45,7 +45,7 @@ struct ParquetRowsResult {
     bool ok() const { return error.empty(); }
 };
 
-// The most rows read_parquet_rows holds as JSON objects (LSR-252, #1425). A footer claiming more is
+// The most rows read_parquet_rows holds as JSON objects (#1425). A footer claiming more is
 // refused before anything is allocated; larger files go through the column decoder instead.
 inline constexpr std::int64_t kMaxParquetRowsInMemory = 10'000'000;
 

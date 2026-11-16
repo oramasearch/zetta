@@ -213,7 +213,7 @@ reaps the child before joining clients so a regression cannot strand the suite.
   the gate is unconditional. The in-process headed-GUI governed console still runs as
   a trusted local session because it authorizes **in-process**, not through this HTTP
   gate. The **web** shell's console is not local: it runs as the signed-in user
-  (`GovernedConsole::set_session_user`, #1434, LSR-261), so each statement is authorized
+  (`GovernedConsole::set_session_user`, #1434), so each statement is authorized
   for that user, its pipeline steps and SQL run as the user, and its audit rows name the
   user, never `(local)`.
 - Every call runs the deny-by-default capability check and the registry applies

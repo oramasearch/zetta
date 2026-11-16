@@ -113,7 +113,7 @@ A new kind of entity directory: give it a marker check in `entity_kind` and a ro
 top-level directory: a branch in `measure_storage`. Keep `storage_kinds()` the one list, so the
 output schema and lake's mapping follow it.
 
-## Who sees what (LSR-257, #1430)
+## Who sees what (#1430)
 
 `storage_usage` describes a node's whole disk, so only an administrator (`api:cluster_admin`) or
 the local session gets all of it. Anyone else gets only the buckets it holds `objects:read` on, the

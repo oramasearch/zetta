@@ -82,7 +82,7 @@ namespace zetta::api {
 
 namespace {
 
-// A path on this origin a browser will not read as another origin (LSR-262, zetta#1435): it starts
+// A path on this origin a browser will not read as another origin (zetta#1435): it starts
 // with one `/`, and holds no `\` (browsers read `/\host` as `//host`), no control character or
 // space (stripped or rewritten before parsing), and no scheme or authority. Only then is it
 // a redirect target.

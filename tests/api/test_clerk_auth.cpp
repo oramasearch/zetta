@@ -125,7 +125,7 @@ TEST(ClerkAuth, VerifiesAValidToken) {
     EXPECT_EQ(claims->email, "u@x.com");
 }
 
-// LSR-250 (#1423): a signed token must also carry an expiry and be issued to one of this node's
+// #1423: a signed token must also carry an expiry and be issued to one of this node's
 // own origins; a token minted for another product sharing the Clerk instance is refused.
 TEST(ClerkAuth, RequiresAnExpiryAndThisNodesAuthorizedParty) {
     ASSERT_TRUE(studio_party_configured);

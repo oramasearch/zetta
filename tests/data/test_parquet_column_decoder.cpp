@@ -533,7 +533,7 @@ TEST(ParquetColumnDecoder, CompactVarintsRejectOverflowAndKeepUint64Range) {
     }
 }
 
-// LSR-251 (#1424): skipping an unknown field nests at most kMaxSkipDepth lists, maps and structs, so
+// #1424: skipping an unknown field nests at most kMaxSkipDepth lists, maps and structs, so
 // a footer of a million nested one-element lists is refused instead of exhausting the stack.
 TEST(ParquetColumnDecoder, CompactSkipRefusesDeepNestingAndSkipsShallowNesting) {
     using zetta::parquet::detail::CompactReader;

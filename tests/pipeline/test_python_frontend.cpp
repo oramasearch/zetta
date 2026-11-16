@@ -286,7 +286,7 @@ TEST(PythonFrontend, RejectsSyntaxErrors) {
         << result.error;
 }
 
-// LSR-254 (#1427): nesting is bounded, so a hostile script of a million brackets is a parse error
+// #1427: nesting is bounded, so a hostile script of a million brackets is a parse error
 // instead of a stack overflow, and ordinary nesting still compiles.
 TEST(PythonFrontend, DeeplyNestedExpressionsAreAParseError) {
     const std::string deep = "x = " + std::string(1'000'000, '[') + std::string(1'000'000, ']') + "\n";

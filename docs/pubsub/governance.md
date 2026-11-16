@@ -22,7 +22,7 @@ hashes, never payloads. See [crud.md](crud.md) for exact scope and audit contrac
 `AllowAllAuthorizer` is for engine-internal use and tests; the node supplies one backed by
 the central governance model.
 
-**An inbox is not a topic of its namespace** (LSR-259, #1432). The node's authorizer and the
+**An inbox is not a topic of its namespace** (#1432). The node's authorizer and the
 pub/sub capabilities check a topic against the topic resource `<name>`, and an inbox against
 `inbox:<name>`. An address name never holds `:`, so no topic-prefix grant (`ON TOPIC 'agent.'`)
 reaches an inbox (`inbox:agent.viewer`). An exposed inbox is granted explicitly, on
