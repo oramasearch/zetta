@@ -78,6 +78,12 @@ RowExplanation explain_values(const GbdtModel& gbdt,
 RowExplanation explain_row(const Model& model, const nlohmann::json& row) {
     if (!row.is_object()) return failure("explain: the row is not an object");
 
+    if (model.kind() == "segmentation") {
+        // Centres, not trees (#1497): explain_segmentation_* answer for it.
+        return failure("explain: model '" + model.id() +
+                       "' is a segmentation model; explain_segmentation_row / "
+                       "explain_segmentation_entity explain its segments");
+    }
     std::string weights_error;
     const std::optional<GbdtModel> gbdt = load_gbdt_model(model, &weights_error);
     if (!gbdt) {
@@ -129,6 +135,12 @@ RowExplanation explain_entity(Node& node, const Model& model, const std::string&
         return failure("explain: the dataset contract names no entity column");
     }
 
+    if (model.kind() == "segmentation") {
+        // Centres, not trees (#1497): explain_segmentation_* answer for it.
+        return failure("explain: model '" + model.id() +
+                       "' is a segmentation model; explain_segmentation_row / "
+                       "explain_segmentation_entity explain its segments");
+    }
     std::string weights_error;
     const std::optional<GbdtModel> gbdt = load_gbdt_model(model, &weights_error);
     if (!gbdt) {

@@ -11796,7 +11796,7 @@
     },
     "/v1/explain": {
       "get": {
-        "description": "Answer WHY one account scored as it did: the exact signed contribution of every feature, strongest first, for a single entity of a dataset or for a row you supply. This is the per-account answer — `score`'s drivers are the population ranking, identical for every row, so two accounts with the same score look the same there even when they are at risk for opposite reasons. Read-only. Requires data:predict.",
+        "description": "Answer WHY one account scored as it did: the exact signed contribution of every feature, strongest first, for a single entity of a dataset or for a row you supply. This is the per-account answer — `score`'s drivers are the population ranking, identical for every row, so two accounts with the same score look the same there even when they are at risk for opposite reasons. For a segmentation model it answers the row's segment and which columns place it there rather than in the runner-up segment. Read-only. Requires data:predict.",
         "operationId": "explain",
         "parameters": [
           {
@@ -12011,6 +12011,24 @@
                       "type": "string"
                     },
                     "value": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "contributions",
+                            "base_value",
+                            "raw",
+                            "risk"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "kind",
+                            "contributions",
+                            "segment_id",
+                            "distance"
+                          ]
+                        }
+                      ],
                       "properties": {
                         "base_value": {
                           "description": "the model's expected raw score — what an account with nothing notable about it would get. Contributions are movements away from this",
@@ -12034,6 +12052,9 @@
                           },
                           "type": "array"
                         },
+                        "distance": {
+                          "type": "number"
+                        },
                         "entity": {
                           "description": "present when a dataset entity was explained",
                           "oneOf": [
@@ -12043,6 +12064,19 @@
                             {
                               "type": "string"
                             }
+                          ]
+                        },
+                        "kind": {
+                          "description": "present for a segmentation model (#1497): the answer is the row's segment, its runner-up, and each column's contribution = (distance to the runner-up squared - distance to its own centre squared) summed over the column's encoded features. Positive pulls the row toward its segment; the contributions sum to runner_up.distance^2 - distance^2",
+                          "enum": [
+                            "segmentation"
+                          ],
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "raw": {
@@ -12056,14 +12090,18 @@
                         "risk": {
                           "description": "the same prediction as a probability, comparable with a ranked list. NOT the sum of the contributions — probabilities are not additive",
                           "type": "number"
+                        },
+                        "runner_up": {
+                          "description": "the next nearest segment: {segment_id, distance, label}",
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        },
+                        "segment_id": {
+                          "type": "integer"
                         }
                       },
-                      "required": [
-                        "contributions",
-                        "base_value",
-                        "raw",
-                        "risk"
-                      ],
                       "type": "object"
                     }
                   },
@@ -39161,7 +39199,7 @@
     },
     "/v1/score": {
       "get": {
-        "description": "Run a registered model over a `database.table` dataset (compute-near-data, this node's own partitions) or over rows you supply, and get the entities ranked by risk plus what drives it. This is how the at-risk list is answerable after the run that produced it has ended, and how an account that is not in the data at all gets a score. Read-only. Requires data:predict.",
+        "description": "Run a registered model over a `database.table` dataset (compute-near-data, this node's own partitions) or over rows you supply, and get the entities ranked by risk plus what drives it. This is how the at-risk list is answerable after the run that produced it has ended, and how an account that is not in the data at all gets a score. A segmentation model answers `kind: segmentation` and `assignments` (each row's nearest segment, its distance and label) instead of a ranking. Read-only. Requires data:predict.",
         "operationId": "score",
         "parameters": [
           {
@@ -39398,6 +39436,39 @@
                     },
                     "value": {
                       "properties": {
+                        "assignments": {
+                          "description": "segmentation models only: each row's nearest segment, in row order",
+                          "items": {
+                            "properties": {
+                              "distance": {
+                                "description": "Euclidean distance to the segment's centre in the model's standardized space, as the run's assignment table records it",
+                                "type": "number"
+                              },
+                              "entity": {
+                                "oneOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "label": {
+                                "description": "the segment profile's label, when recorded",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "segment_id": {
+                                "type": "integer"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "drivers": {
                           "description": "population drivers, strongest first",
                           "items": {
@@ -39419,6 +39490,13 @@
                             "type": "string"
                           },
                           "type": "array"
+                        },
+                        "kind": {
+                          "description": "present for a segmentation model, whose answer is `assignments` and whose `ranked` is empty",
+                          "enum": [
+                            "segmentation"
+                          ],
+                          "type": "string"
                         },
                         "partitions_read": {
                           "type": "integer"

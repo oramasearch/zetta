@@ -136,6 +136,12 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
         return failure("score: the dataset contract names no entity column");
     }
 
+    if (model.kind() == "segmentation") {
+        // Its weights are centres, not trees (#1497): score_segmentation_* place a row.
+        return failure("score: model '" + model.id() +
+                       "' is a segmentation model; it assigns rows to segments and is "
+                       "scored by score_segmentation_rows / score_segmentation_table");
+    }
     std::string weights_error;
     const std::optional<GbdtModel> gbdt = load_gbdt_model(model, &weights_error);
     if (!gbdt) {
@@ -230,6 +236,12 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
                        std::to_string(rows.size()) + " rows");
     }
 
+    if (model.kind() == "segmentation") {
+        // Its weights are centres, not trees (#1497): score_segmentation_* place a row.
+        return failure("score: model '" + model.id() +
+                       "' is a segmentation model; it assigns rows to segments and is "
+                       "scored by score_segmentation_rows / score_segmentation_table");
+    }
     std::string weights_error;
     const std::optional<GbdtModel> gbdt = load_gbdt_model(model, &weights_error);
     if (!gbdt) {

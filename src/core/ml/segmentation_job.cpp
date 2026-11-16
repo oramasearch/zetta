@@ -673,4 +673,31 @@ run_segmentation(Node &node, const zetta::data::ResolvedDataset &dataset,
     return output;
 }
 
+bool read_segmentation_rows(Node &node,
+                            const zetta::data::ResolvedDataset &dataset,
+                            std::vector<SegmentationRow> &rows,
+                            std::size_t &partitions_read, std::string &error) {
+    partitions_read = 0;
+    for (const std::shared_ptr<zetta::data::DatasetPartition> &partition :
+         node.dataset_partitions()) {
+        if (!partition || partition->table() != dataset.table_id ||
+            partition->owner_nodes().empty())
+            continue;
+        if (*std::min_element(partition->owner_nodes().begin(),
+                              partition->owner_nodes().end()) ==
+            node.node_id())
+            ++partitions_read;
+    }
+    std::uint64_t read_count = 0;
+    std::uint64_t expected_count = 0;
+    bool loaded = false;
+    // The partition catalog and blob store are owner-thread only (#624).
+    node.run_on_owner([&] {
+        loaded = load_owned_rows(node, dataset, SegmentationParams{},
+                                 /*is_root=*/true, read_count, expected_count,
+                                 rows, error);
+    });
+    return loaded;
+}
+
 } // namespace zetta::ml
