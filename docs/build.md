@@ -197,12 +197,29 @@ ctest --test-dir build --output-on-failure
 Tests (GoogleTest) live in `tests/`, link `zetta-core`, and cover the headless
 core only. Disable building them with `-DZETTA_BUILD_TESTS=OFF`.
 
-## Container builds (`.dockerignore`)
+## Container image (`Dockerfile`, `.dockerignore`)
 
-The image Dockerfiles live outside this repo — `build/images/zetta-headless/` and
-`build/images/zetta-e2e/` in `zetta-bridge` — but they use **this repository root as the
-build context** and do `COPY . /src`, so the context is filtered by the `.dockerignore`
-here.
+The headless image is built from the [`Dockerfile`](../Dockerfile) at the repository root,
+with the repository root as the build context. Check the submodules out first; the build
+runs no git:
+
+```bash
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git && cd zetta
+docker buildx build --platform linux/amd64 -t <registry>/zetta:<version> .
+docker run --rm -p 4800:4800 -p 7777:7777 -v zetta-data:/data <registry>/zetta:<version>
+```
+
+Two stages on `ubuntu:24.04` (pinned by digest). The build stage uses Clang 19 from
+`apt.llvm.org` and CMake 3.31.5 (Ubuntu's 3.28 does not know `cxx_std_26` for Clang 19), and
+builds CPU-only with tests off. The runtime stage holds `libssl3`, `libstdc++6`, `libpq5` and
+`ca-certificates`, runs as uid 10001, keeps state in `VOLUME /data`, exposes 7777 (peer, mTLS)
+and 4800 (MCP + REST + Studio), and seats the Studio bundle from `webapp/` via
+`ZETTA_WEBAPP_DIR`. A tree without `webapp/` still builds: the directory is empty, and with
+no `index.html` in it the node serves its built-in server-rendered UI at `/`.
+
+### `.dockerignore`
+
+The Dockerfile does `COPY . /src`, so the context is filtered by the `.dockerignore` here.
 
 It exists for a specific failure. Without it, a host `build/` directory is copied into
 the image, and its `CMakeCache.txt` records absolute *host* paths, so the in-image

@@ -286,7 +286,7 @@ troubleshooting — are in **[docs/build.md](docs/build.md)**. The short version
 
 ```bash
 # Clone with submodules (or run the submodule step in an existing checkout):
-git clone --recurse-submodules git@github.com:oramasearch/zetta.git
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git
 #   …existing checkout: git submodule update --init --recursive
 
 ./scripts/install-deps.sh                # system tools (macOS / Ubuntu)

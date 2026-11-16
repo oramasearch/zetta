@@ -43,7 +43,8 @@ zetta-core). The GoogleTest unit tests build behind `ZETTA_BUILD_TESTS`.
 
 ```
 CMakeLists.txt              build graph: zetta_transport (and ZETTA_TRANSPORT_ONLY consumer mode), imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
-.dockerignore               build-context filter for the zetta-bridge image Dockerfiles (COPY . /src); keeps a host build/ + its absolute-path CMakeCache.txt out of the image (#839) — see docs/build.md
+Dockerfile                  the headless Linux image (two-stage, Clang 19, non-root, VOLUME /data, 7777 + 4800) — see docs/build.md
+.dockerignore               build-context filter for the Dockerfile (COPY . /src); keeps a host build/ + its absolute-path CMakeCache.txt out of the image (#839) — see docs/build.md
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + README
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)

@@ -288,7 +288,7 @@ std::optional<std::string> read_body_file(const std::filesystem::path& path) {
 const nlohmann::json& partition_scan_request_schema() {
     static const nlohmann::json schema = {
         {"$schema", "http://json-schema.org/draft-07/schema#"},
-        {"$id", "https://zetta.orama.com/schemas/partition_scan_request.schema.json"},
+        {"$id", "https://oramasearch.github.io/zetta/schemas/partition_scan_request.schema.json"},
         {"title", "PartitionScanRequest"},
         {"description",
          "A scatter-gather SELECT's ask of one partition owner: scan these "
@@ -370,7 +370,7 @@ const nlohmann::json& partition_scan_request_schema() {
 const nlohmann::json& partition_scan_response_schema() {
     static const nlohmann::json schema = {
         {"$schema", "http://json-schema.org/draft-07/schema#"},
-        {"$id", "https://zetta.orama.com/schemas/partition_scan_response.schema.json"},
+        {"$id", "https://oramasearch.github.io/zetta/schemas/partition_scan_response.schema.json"},
         {"title", "PartitionScanResponse"},
         {"description",
          "One partition owner's answer to a scatter-gather SELECT: the surviving "

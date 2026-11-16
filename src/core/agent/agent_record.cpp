@@ -129,7 +129,7 @@ const std::vector<std::string>& agent_skills() {
 const nlohmann::json& agent_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSON({
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "$id": "https://oramasearch.dev/schemas/agent.schema.json",
+      "$id": "https://oramasearch.github.io/zetta/schemas/agent.schema.json",
       "title": "Agent",
       "description": "A served, named agent (zetta#849): a model + system prompt + tools a user can list, select, and chat with.",
       "type": "object",
