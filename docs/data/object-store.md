@@ -472,6 +472,14 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectRoutes.AnswersCarryTheDurabilityFormatAndTheIncarnation` | lake#543: the lease and barrier answers and `server_info` report `object_log_prefix_durability: 1`; every write (one frame and an upload), lease and barrier answer carries the bucket's incarnation, `server_info.incarnation` then `.0`; a `PUT` (one frame and an upload), `PATCH`, `DELETE` or `:barrier` with another `Zetta-Incarnation` answers `409 incarnation_changed` naming the current one and applies nothing |
 | `ObjectRoutes.*` | the raw routes and statuses, the aliases, fencing and the waiting acquire over REST and MCP, the `ON BUCKET` grant and its audit rows, `507`, MCP and OpenAPI, and the six latency budgets |
 
+## Backup snapshots
+
+A backup snapshot ([backup-snapshot.md](backup-snapshot.md), zetta#1518) freezes the store's
+write gate (`ObjectStore::write_gate()`) while it lists every bucket and pins a reader on every
+object version: a mutation this node decides answers `Unavailable` (retry), and an install on
+this owner is refused. The gate never blocks a writer. Tested by `BackupSnapshot.*`
+(`tests/data/test_backup_snapshot.cpp`).
+
 ## Later
 
 - A `system.object_buckets` read view.

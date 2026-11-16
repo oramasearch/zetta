@@ -529,6 +529,7 @@ add_library(zetta-core STATIC
   src/core/api/network_capabilities.cpp
   src/core/api/safe_mode_capabilities.cpp
   src/core/api/object_capabilities.cpp
+  src/core/api/backup_routes.cpp
   src/core/api/storage_capabilities.cpp
   src/core/api/study_capabilities.cpp
   src/core/api/decision_policy_capabilities.cpp
@@ -718,6 +719,7 @@ add_library(zetta-core STATIC
   src/core/data/record_log.cpp
   src/core/data/metric_store.cpp
   src/core/data/object_store.cpp
+  src/core/data/backup_snapshot.cpp
   src/core/data/storage_census.cpp
   src/core/data/object_log.cpp
   src/core/data/add_dataset.cpp

@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cluster/signal.hpp"
+#include "zetta/data/write_gate.hpp"
 
 namespace zetta::cluster {
 class Cluster;
@@ -342,6 +343,12 @@ public:
     // The nodes that hold (bucket, key) in this node's view, primary first.
     std::vector<std::string> owners_of(const std::string& bucket, const std::string& key) const;
     // Tombstone grace, idle uploads, segment flushing and a bounded compaction step.
+    // Backup snapshots (zetta#1518, docs/data/backup-snapshot.md): while a
+    // snapshot holds the gate frozen, a mutation this node decides answers
+    // Unavailable (retry) and an install on this owner is refused, so the
+    // versions the snapshot pins are the bucket's state at one moment.
+    WriteGate& write_gate() { return gate_; }
+
     void maintain(std::int64_t now_ms);
     // Pull what this node owns and lacks from every live peer, and drop copies it
     // no longer owns once their owners hold them. Blocks on the signal plane.
@@ -407,6 +414,7 @@ private:
     std::mutex lease_mutex_;  // lease decisions on this node, one at a time
     std::atomic<zetta::cluster::Cluster*> cluster_{nullptr};
     std::atomic<zetta::cluster::SignalHandler*> delegate_{nullptr};
+    WriteGate gate_;
 };
 
 }  // namespace zetta::data

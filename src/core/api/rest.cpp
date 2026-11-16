@@ -113,6 +113,8 @@ int rest_status(const ApiResult& result) {
     if (code == "quota_exceeded") return 507;
     if (code == "unknown_capability") return 404;
     if (code == "engine_error") return 422;
+    // A restore whose counts are not its manifest's (zetta#1518).
+    if (code == "verification_failed") return 422;
     if (code == "busy") return 503;
     if (code == "rate_limited") return 429;       // a published pipeline (zetta#1289)
     if (code == "payload_too_large") return 413;  // a published pipeline (zetta#1289)

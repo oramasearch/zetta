@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cluster/signal.hpp"
+#include "zetta/data/write_gate.hpp"
 
 namespace zetta::cluster {
 class Cluster;
@@ -210,6 +211,22 @@ public:
     // The node that orders writes of (collection, key) in this node's view.
     std::string owner_of(const std::string& collection, const std::string& key) const;
 
+    // Backup snapshots (zetta#1518, docs/data/backup-snapshot.md). While a
+    // snapshot holds the gate frozen, a write ordered here answers Unavailable
+    // (retry) and a replica install is skipped (anti-entropy brings it later).
+    // Engine-internal rows (put_internal, fold) are not gated.
+    WriteGate& write_gate() { return gate_; }
+    // Every live record of `collection` (a user or an engine-internal one) as
+    // this node holds it, in key order, with its revision and expiry. `visit`
+    // returns false to stop.
+    void export_records(const std::string& collection,
+                        const std::function<bool(const StoredRecord&)>& visit) const;
+    // Restore: install `record` exactly as it was stored (revision, index,
+    // order, expiry) and send it to every live peer. False when the name or key
+    // is invalid, the record has expired, the gate is frozen, or the log could
+    // not be written.
+    bool import_record(const StoredRecord& record);
+
     zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
     void on_event(const zetta::cluster::Signal& event) override;
     void on_task(const zetta::cluster::Signal& task) override;
@@ -232,6 +249,7 @@ private:
     std::unique_ptr<RecordLog> log_;
     std::atomic<zetta::cluster::Cluster*> cluster_{nullptr};
     std::atomic<zetta::cluster::SignalHandler*> delegate_{nullptr};
+    WriteGate gate_;
 };
 
 }  // namespace zetta::data

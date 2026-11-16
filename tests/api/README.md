@@ -105,6 +105,13 @@ statuses, the bucket aliases, the fence and the waiting acquire over REST and MC
 (#1005). Registry coverage accepts a retrying awaitable action and the OpenAPI
 check counts the object paths.
 
+`test_backup_routes.cpp` calls the backup routes over loopback HTTP the way the
+Orama operator's backup Job does: a snapshot answering `{snapshot, summary}` at the
+top level, its archive streamed and released, a restore into a fresh node answering
+the same summary, 409 for a node holding data, 403 without `cluster:admin` on every
+route with the audit rows, a truncated archive refused, and discard refused on a node
+not started with `--restore-target` (zetta#1518, docs/data/backup-snapshot.md).
+
 `test_agent_api.cpp` proves `agent_run` refuses a stored plan nobody approved
 (`not_approved`, no Run started, the plan still proposed) and runs one after
 `approve_plan`, without a model checkpoint; the checkpoint-guarded test proves the

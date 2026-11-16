@@ -43,3 +43,11 @@ objects by `(bucket, key)` in node-local logs, placed on `rf` owners, with put, 
 range, ranged reads, list, barrier, usage, a quota and an owner lease whose fence
 every mutation carries. `Node::object_store()` is null on a standalone node, like
 the record store. See [the object capability](../../docs/data/object-store.md).
+
+`data/backup_snapshot.hpp` is the backup snapshot and its restore (zetta#1518):
+`SnapshotWriter` writes one consistent archive under `<data_dir>/backups/<id>/`,
+`BackupSnapshots` finds, releases and expires them, `SnapshotRestore` applies an
+archive fed a slice at a time and verifies it against its manifest, and
+`discard_restored` empties a restored restore target. `data/write_gate.hpp` is the
+non-blocking freeze the record and object stores carry (`write_gate()`). See
+[backup snapshots](../../docs/data/backup-snapshot.md).

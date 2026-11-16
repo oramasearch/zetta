@@ -121,6 +121,16 @@ answer only while the entity's replicated `exposed` flag is set
 is exposed (expose_pipeline below); access requires `data:run_pipeline` and
 read access to the tables it reads (zetta#1289).
 
+The same server serves the **backup routes** ([backup-snapshot.md](../data/backup-snapshot.md),
+zetta#1518), which the Orama operator's backup system calls: `POST /v1/backup_snapshot` takes a
+consistent snapshot and answers `{snapshot, summary}`, `GET /v1/backup_snapshot/<id>` streams its
+archive, `DELETE` releases it, `POST /v1/restore_snapshot` restores an archive (the body) into a
+node holding no user data and answers its `summary` (409 otherwise, 422 `verification_failed`
+when the counts differ from the manifest's), and `POST /v1/restore_snapshot:discard` empties a
+restored node started with `--restore-target`. Every one needs `cluster:admin` and is audited
+(`api:<route>`). They move raw archives, so the HTTP adapter serves them; they are not in the
+OpenAPI document yet.
+
 ## Connect a client
 
 `POST /mcp` is the **Streamable HTTP** MCP transport, so any MCP client points
