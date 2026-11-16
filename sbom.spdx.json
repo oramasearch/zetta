@@ -2,17 +2,17 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "zetta-598694dec1bb",
-  "documentNamespace": "https://github.com/oramasearch/zetta/sbom/598694dec1bbce9cdd19ea112c5ee899d23c4e92",
+  "name": "zetta-4dfc2a9a7ba8",
+  "documentNamespace": "https://github.com/oramasearch/zetta/sbom/4dfc2a9a7ba88630bb862405d6e6607b86baad72",
   "creationInfo": {
-    "created": "2026-11-15T17:24:03Z",
+    "created": "2026-11-16T01:55:32Z",
     "creators": [
       "Organization: OramaSearch, Inc.",
       "Tool: tools/sbom.py",
       "Tool: syft"
     ],
     "licenseListVersion": "3.29",
-    "comment": "Made from source commit 598694dec1bbce9cdd19ea112c5ee899d23c4e92 by tools/sbom.py."
+    "comment": "Made from source commit 4dfc2a9a7ba88630bb862405d6e6607b86baad72 by tools/sbom.py."
   },
   "documentDescribes": [
     "SPDXRef-DocumentRoot"
@@ -353,7 +353,7 @@
     {
       "name": "zetta",
       "SPDXID": "SPDXRef-DocumentRoot",
-      "versionInfo": "598694dec1bb",
+      "versionInfo": "4dfc2a9a7ba8",
       "downloadLocation": "git+https://github.com/oramasearch/zetta.git",
       "homepage": "https://github.com/oramasearch/zetta",
       "filesAnalyzed": false,
