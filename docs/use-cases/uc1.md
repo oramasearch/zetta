@@ -152,7 +152,7 @@ This is the shape every use case shares. To turn it into a *generic* engine, the
 
 ## 6. Genericity — how any team instantiates it
 
-UC-1 is not "Charles's churn model." It is a **type** any team instantiates by declaring a small contract:
+UC-1 is not one customer's churn model. It is a **type** any team instantiates by declaring a small contract:
 
 - **Entity** — the unit to score (account, customer, subscription, …).
 - **Label** — the churn definition + **horizon** (e.g. "no renewal / cancellation within 90 days") + censoring rule.
@@ -176,19 +176,18 @@ This is **explicitly out of scope for the first cut.** It is the same churn envi
 
 ---
 
-## 8. Business context — Motive / Charles (the first instance)
+## 8. The correctness bar — entity resolution
 
-The first customer-shaped instance of UC-1 is **Motive** (a large fleet-management SaaS), via **Charles** (RevOps/Data lead). He is the bottleneck every data/AI request funnels through — "you're too slow," for two years.
+The gate a churn result has to pass before anyone trusts it is the **entity-resolution
+test** ([TC-4 / #251](https://github.com/oramasearch/zetta/issues/251)). One parent brand
+appears as several subsidiaries, each a separate CRM account (the fixture uses the invented
+Contoso Freight and its five siblings). A query or a communication that names "Contoso
+Freight" must resolve to that account and never conflate the siblings: a churn score
+attached to the wrong division is worse than none.
 
-- **The status quo:** Charles runs churn today as **n8n + a local sidecar + Gemini** — LLM pattern-matching that compares active-account conversations against churned-cohort patterns and emits 0–100 risk scores, then files Jira tickets. It works, but it has **no real predictive power** (no trained model, no feature engineering, no calibrated probabilities), and it isn't fast, governed, or self-serve. He is the single point of failure.
-- **What he is paying for:** a **fast, governed, downloadable substrate** his developers can run themselves — *"discover my data sources, let me use them, configure them, apply a security model on top… it doesn't have to be jazzy."* Orama Zetta's differentiation on top of that substrate is the **real trained model** (the "learns from your data" thesis).
-- **The make-or-break gate:** the **FedEx Freight entity-resolution test** ([TC-4 / #251](https://github.com/oramasearch/zetta/issues/251)) — FedEx appears as 5–6 subsidiaries as separate CRM accounts; a query for "FedEx Freight" must resolve to the right account and not conflate them. This is the concrete correctness bar Charles will judge us on.
-- **Data + governance:** Snowflake (communications), Salesforce (accounts), Postgres (working store); access is **key-scoped** ([RULE-3 / #211](https://github.com/oramasearch/zetta/issues/211)); production eventually runs in Motive's own AWS/Kubernetes behind Okta. Data access during the PoC is via a contractor engagement (NDA signed; SOC 2 observation complete).
-- **The deal:** ~$40K contingent proof-of-concept (free if it fails the eval gates) → ~$20K/month → earned annual. A **~2–3 week downloadable churn beta** is the evaluation, run head-to-head against the internal Retool churn app.
-
-Detail: [`motive-problem-definition`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-problem-definition/) · [`motive-delivery`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-delivery/) · [`motive-one-proposal`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-one-proposal/). Source meetings: [2026-06-24](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-24-casey-issac-steve/) · [2026-06-10 (Charles)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-10-casey-charles-issac-matt-steve/) · [2026-06-03 (the n8n workflows)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-03-casey-charles-issac-juan-matt-nathanael-steve/).
-
-**Important framing:** Charles is the *first instance*, not the spec. UC-1 is the generic churn type; Motive is where we prove it. Don't let Motive-specific detail collapse the use case into a bespoke build.
+Access to the source data is **key-scoped** ([RULE-3 / #211](https://github.com/oramasearch/zetta/issues/211)),
+and the pipeline runs where the data is, so the customer's rows never leave their
+environment.
 
 ---
 
@@ -214,7 +213,7 @@ Plus `relates_to` [RULE-3 / #211](https://github.com/oramasearch/zetta/issues/21
 
 - **Correctness gate (release-blocking):** every generated graph compiles AND runs AND produces correct results; validation covers schema, data leakage, and point-in-time integrity.
 - **Model quality:** PR-AUC / AUC, **calibration**, and **lift@k** (does the top decile actually contain the churners?) — not raw accuracy. Backtest **out-of-time** (train on earlier `t0`s, evaluate on later ones).
-- **The entity-resolution gate:** the FedEx Freight test (TC-4) must pass — correct account scoping, no conflation.
+- **The entity-resolution gate:** the Contoso Freight test (TC-4) must pass — correct account scoping, no conflation.
 - **The product bar:** a user points at data and gets a working, explained churn model **within ~an hour**, deployed and governed.
 - **The compounding bar (later):** the outcome log lets us measure realized save-rate-by-driver and improve the priors → uplift.
 

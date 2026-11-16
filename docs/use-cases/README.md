@@ -18,9 +18,9 @@ the slices in pipeline order (data → resolution → execution → train-at-sca
 end-to-end proofs):
 
 - [uc1.md](uc1.md) — **the worked exemplar**: the full UC-1 churn solution end to end — what it is, the pipeline, the business case, what's deferred, the blueprint mapping, the build plan.
-- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn fixture + loader: committed accounts + events, the FedEx entity-resolution case, schema-validated, no foreign runtime (#402).
+- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn fixture + loader: committed accounts + events, the Contoso entity-resolution case, schema-validated, no foreign runtime (#402).
 - [entity-resolution.md](entity-resolution.md) — entity resolution in featurization: resolve raw comms mentions to CRM accounts division-correct; resolver produces, gate verifies (`EntityResolver`, TC-4 / #394).
-- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the FedEx-Freight case) (`EntityResolutionCheck`, TC-4).
+- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the Contoso-Freight case) (`EntityResolutionCheck`, TC-4).
 - [churn-step-executor.md](churn-step-executor.md) — the real churn `StepExecutor`: each pipeline stage as actual distributed compute behind the same seam, each heavy step a recorded `ComputeJob` (#396).
 - [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine via the ONE public runner over the node's live `JobCoordinator` (`run_churn_solution_on_node`, #398/#580/#637).
 - [uc1-train-over-partitions.md](uc1-train-over-partitions.md) — train GBDT(outcome) compute-near-data over a partitioned feature table: train → explain → rank, near-data instrumented (`run_near_data_train_job`, #533).
@@ -91,7 +91,7 @@ From the dossier, write down the concrete shape, and **tag every piece as reused
 - **Explanation** *(engine)* — native **TreeSHAP** → per-entity drivers; reused as-is.
 - **Driver → action → owner map** *(skin)* — the deterministic mapping from a dominant driver to a recommended action and its owner. This and the label are the *only* genuinely use-case-specific logic.
 - **Evaluation bar** *(skin)* — the metric + threshold the model must clear to be worth shipping.
-- **Data sources + pitfalls** *(skin)* — the systems the data comes from and the domain-specific leakage / identity traps (e.g. the FedEx-Freight **entity-resolution** trap in churn — does this domain have an analogue? If so, it's a make-or-break eval, like [TC-4](https://github.com/oramasearch/zetta/issues/251)).
+- **Data sources + pitfalls** *(skin)* — the systems the data comes from and the domain-specific leakage / identity traps (e.g. the Contoso-Freight **entity-resolution** trap in churn — does this domain have an analogue? If so, it's a make-or-break eval, like [TC-4](https://github.com/oramasearch/zetta/issues/251)).
 
 Litmus test: if you're specifying more than the label + features + action-map, ask whether you're rebuilding something the engine already provides.
 

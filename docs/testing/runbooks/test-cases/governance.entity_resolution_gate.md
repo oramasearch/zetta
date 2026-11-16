@@ -18,15 +18,15 @@ one is blocked (RULE-1).
    [`compile_intent`](../../../pipeline/intent-compiler.md), then attaches the
    `entity_resolution` annotation to its `build_features` clean step, computed
    from the [synthetic churn fixture](../../../use-cases/churn-dataset.md) under the chosen
-   strategy (so "division-correct" is *earned* from the FedEx mentions, not
+   strategy (so "division-correct" is *earned* from the Contoso mentions, not
    asserted by construction).
 3. **Runs the gate.** Runs [`default_gate()`](../../../pipeline/gate.md) over the graph and
    reads the `entity_resolution` check's status.
 4. **Checks the verdict matches the resolver.**
-   - **`full_name` (choice 0):** the FedEx siblings stay separate accounts, the
+   - **`full_name` (choice 0):** the Contoso siblings stay separate accounts, the
      check **passes**, and the gate does not block. The case passes by asserting
      the gate passed.
-   - **`brand` (choice 1):** the resolver **conflates** the 5–6 FedEx
+   - **`brand` (choice 1):** the resolver **conflates** the 5–6 Contoso
      subsidiaries onto one account, the check **fails**, and the gate **blocks
      deploy**. The case passes by asserting the gate blocked it (the failure is
      the expected, correct outcome — TC-4).

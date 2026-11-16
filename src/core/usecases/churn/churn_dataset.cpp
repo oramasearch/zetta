@@ -94,7 +94,7 @@ const nlohmann::json& churn_account_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/churn_account.schema.json",
   "title": "zetta.ChurnAccount",
-  "description": "One account row of a synthetic UC-1 churn dataset (one JSONL line / one CSV record). Carries the entity to score, its commercial + tenure attributes, the churn label, and — for the TC-4 entity-resolution case — the ground-truth canonical `entity` and `brand` (FedEx siblings share a brand but are distinct entities/accounts). Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
+  "description": "One account row of a synthetic UC-1 churn dataset (one JSONL line / one CSV record). Carries the entity to score, its commercial + tenure attributes, the churn label, and — for the TC-4 entity-resolution case — the ground-truth canonical `entity` and `brand` (Contoso siblings share a brand but are distinct entities/accounts). Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
   "type": "object",
   "required": [
     "account_id",
@@ -119,16 +119,16 @@ const nlohmann::json& churn_account_schema() {
       "minLength": 1
     },
     "name": {
-      "description": "Display name of the account (e.g. \"FedEx Freight\").",
+      "description": "Display name of the account (e.g. \"Contoso Freight\").",
       "type": "string",
       "minLength": 1
     },
     "brand": {
-      "description": "Parent brand grouping sibling accounts (e.g. \"FedEx\"). May be empty for a standalone account; siblings sharing a brand must NOT be conflated into one account.",
+      "description": "Parent brand grouping sibling accounts (e.g. \"Contoso\"). May be empty for a standalone account; siblings sharing a brand must NOT be conflated into one account.",
       "type": "string"
     },
     "entity": {
-      "description": "Ground-truth canonical entity/division the account is (e.g. \"fedex_freight\") — the TC-4 fixture label.",
+      "description": "Ground-truth canonical entity/division the account is (e.g. \"contoso_freight\") — the TC-4 fixture label.",
       "type": "string",
       "minLength": 1
     },

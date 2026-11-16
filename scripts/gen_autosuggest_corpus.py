@@ -140,7 +140,7 @@ def churn_self_test_sample() -> dict[str, Any]:
         "data_state": {
             "description": "Account communications + churn history (Snowflake + Postgres).",
             "tables": [
-                {"name": "account_registry", "columns": ["sfdc_account_id", "finance_segment"],
+                {"name": "account_registry", "columns": ["crm_account_id", "segment"],
                  "profile": "~12k accounts, low null rate"},
                 {"name": "account_events", "columns": ["event_date", "event_type", "comm_text"],
                  "profile": "~1.4M events, daily freshness"},

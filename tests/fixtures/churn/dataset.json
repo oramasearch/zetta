@@ -1,6 +1,6 @@
 {
   "name": "synthetic-churn-uc1",
-  "description": "Small synthetic B2B-SaaS churn dataset for UC-1 native tests. No real customer data, no foreign runtime. Includes the FedEx entity-resolution case (TC-4): FedEx Freight + 5 sibling subsidiaries as separate accounts.",
+  "description": "Small synthetic B2B-SaaS churn dataset for UC-1 native tests. No real customer data, no foreign runtime. Includes the Contoso entity-resolution case (TC-4): Contoso Freight + 5 sibling subsidiaries as separate accounts.",
   "entity_field": "account_id",
   "time_field": "event_ts",
   "label_field": "churned",

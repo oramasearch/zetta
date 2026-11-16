@@ -6,8 +6,8 @@
 #include "zetta/agent/curriculum.hpp"
 #include "zetta/agent/grader.hpp"
 
-// Sample #1 of the base-agent training corpus: Charles's churn game (Motive UC-1),
-// the improvement over his LLM-pattern-matching n8n. Following blender-rl's method,
+// Sample #1 of the base-agent training corpus: the churn game (UC-1), the
+// improvement over an LLM-pattern-matching n8n workflow. Following blender-rl's method,
 // the task must ship a reference solution that PASSES and negative controls that FAIL
 // — discrimination is the product, not the pass (see the rlvr-training-data skill).
 namespace {
@@ -101,7 +101,7 @@ TEST(Curriculum, ChurnReferenceTrajectoryBuildsAPassingGraph) {
 
 TEST(Curriculum, ChurnDegenerateTrajectoryFails) {
     zetta::agent::Sandbox sandbox = zetta::agent::churn_sandbox();
-    // Charles's current approach: same steps, but the model tool is an LLM, not a gbdt.
+    // The LLM-only approach: same steps, but the model tool is an LLM, not a gbdt.
     std::vector<zetta::agent::ToolCall> trajectory = zetta::agent::churn_reference_trajectory();
     for (zetta::agent::ToolCall& call : trajectory) {
         if (call.tool == "model") call.arguments["kind"] = "llm";

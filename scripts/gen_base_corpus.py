@@ -44,7 +44,7 @@ Usage (always via `uv run`; deps declared inline above, PEP 723):
   uv run gen_base_corpus.py --self-test
   uv run gen_base_corpus.py --out corpus.jsonl                       # 20 samples per use case
   uv run gen_base_corpus.py --out corpus.jsonl --append              # resume where it left off
-  uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json --append --push
+  uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=current-workflow.n8n.json --append --push
 """
 from __future__ import annotations
 

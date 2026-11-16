@@ -24,25 +24,25 @@
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 
-// **The real GBDT + TreeSHAP over the Motive demo dataset.**
+// **The real GBDT + TreeSHAP over the communications demo dataset.**
 //
 // Every other measurement of that dataset came from an offline linear probe, which says
 // whether a signal EXISTS but not what the engine actually learns or what it says drives
 // churn. The product's answer to *"why is this account at risk?"* is TreeSHAP over a
 // trained gradient-boosted model, and until this ran, that answer had never been produced
-// on Motive-shaped data at all — only on the small synthetic rows the other tests build.
+// on communications-shaped data at all — only on the small synthetic rows the other tests build.
 //
 // **Gated on the dataset being present**, following the Qwen-checkpoint precedent: the
-// rows are generated (`scripts/gen_motive_demo_dataset.py`), not committed, so a normal
+// rows are generated (`scripts/gen_comms_demo_dataset.py`), not committed, so a normal
 // checkout skips this rather than failing. Run it with:
 //
-//     python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 1500
-//     ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
-//         --gtest_filter='MotiveDemoDataset.*'
+//     python3 scripts/gen_comms_demo_dataset.py --out data/demo/comms --accounts 1500
+//     ZETTA_COMMS_DEMO_DIR=data/demo/comms ./build/tests/zetta-tests \
+//         --gtest_filter='CommsDemoDataset.*'
 //
-// The numbers it prints are the ones the client-facing report quotes
-// (docs/reports/results/motive-churn-results-2026-08-04.md). Re-run it when the generator
-// changes — a report whose numbers no longer reproduce is worse than no report.
+// The numbers it prints are the ones a run report quotes
+// (docs/runbooks/regenerating-the-run-report.md). Re-run it when the generator changes —
+// a report whose numbers no longer reproduce is worse than no report.
 namespace {
 
 namespace fs = std::filesystem;
@@ -61,7 +61,7 @@ using Json = nlohmann::json;
 
 struct AttachedNode {
     explicit AttachedNode(std::uint16_t port)
-        : node(node_config(temp_dir)), cluster("motive-demo", cluster_config(port)) {
+        : node(node_config(temp_dir)), cluster("comms-demo", cluster_config(port)) {
         node.start();
         cluster.start();
         node.attach_cluster(cluster, /*worker_count=*/2);
@@ -86,8 +86,8 @@ struct AttachedNode {
 
 // The dataset directory, or empty when it has not been generated.
 fs::path demo_dir() {
-    if (const char* from_env = std::getenv("ZETTA_MOTIVE_DEMO_DIR")) return fs::path(from_env);
-    const fs::path fallback = fs::path(ZETTA_SOURCE_DIR) / "data" / "demo" / "motive";
+    if (const char* from_env = std::getenv("ZETTA_COMMS_DEMO_DIR")) return fs::path(from_env);
+    const fs::path fallback = fs::path(ZETTA_SOURCE_DIR) / "data" / "demo" / "comms";
     return fs::exists(fallback / "account_features.csv") ? fallback : fs::path{};
 }
 
@@ -148,11 +148,11 @@ std::vector<Json> read_csv(const fs::path& path) {
 // Train the real model on the demo dataset and read what drives churn.
 // =====================================================================
 
-TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
+TEST(CommsDemoDataset, TrainsAndExplainsWithTreeShap) {
     const fs::path dir = demo_dir();
     if (dir.empty()) {
-        GTEST_SKIP() << "generate it first: python3 scripts/gen_motive_demo_dataset.py "
-                        "--out data/demo/motive --accounts 1500";
+        GTEST_SKIP() << "generate it first: python3 scripts/gen_comms_demo_dataset.py "
+                        "--out data/demo/comms --accounts 1500";
     }
     std::vector<Json> rows = read_csv(dir / "account_features.csv");
     ASSERT_FALSE(rows.empty()) << "could not read " << (dir / "account_features.csv");
@@ -182,7 +182,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
 
     AttachedNode host(24730);
     zetta::data::AddDatasetOptions options;
-    options.database = "motive_demo";
+    options.database = "comms_demo";
     options.table_name = "account_features";
     options.partitioned = true;
     options.members = {host.node.node_id()};
@@ -191,13 +191,13 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     ASSERT_TRUE(added.ok()) << added.error;
     ASSERT_TRUE(added.table);
 
-    // The contract: the entity key is an integer ordinal, since sfdc_account_id is a
+    // The contract: the entity key is an integer ordinal, since crm_account_id is a
     // string — the documented limitation, and the reason the override exists.
     zetta::data::DatasetContract overrides;
     overrides.entity_column = "account_index";
     overrides.label_column = "churned";
     const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
-        host.node, zetta::data::parse_dataset_path("motive_demo.account_features"), overrides,
+        host.node, zetta::data::parse_dataset_path("comms_demo.account_features"), overrides,
         zetta::data::default_dataset_sampler(host.node, &host.cluster));
     ASSERT_TRUE(resolved.ok()) << resolved.error;
 
@@ -206,8 +206,8 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
 
     CpuDevice device;
     ChurnSolutionOptions run_options;
-    run_options.project = "motive-demo";
-    run_options.model_name = "motive_churn_model";
+    run_options.project = "comms-demo";
+    run_options.model_name = "comms_churn_model";
     run_options.coordinate = false;
     ChurnTableInput input;
     input.table_id = resolved.table_id;
@@ -312,7 +312,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
         train_conc / (static_cast<double>(train_pos.size()) *
                       static_cast<double>(train_neg.size()));
 
-    std::cout << "\n=== Motive demo dataset · real GBDT + TreeSHAP ===\n";
+    std::cout << "\n=== Communications demo dataset · real GBDT + TreeSHAP ===\n";
     std::cout << "in-sample AUC recomputed here " << recomputed_in_sample
               << " (engine said " << metrics.at("auc").get<double>()
               << ") — these must agree\n";
@@ -351,9 +351,19 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     for (const Json& row : holdout_rows) account_of[row.at("account_index").get<std::int64_t>()] = row;
     for (const Json& row : train_rows) account_of[row.at("account_index").get<std::int64_t>()] = row;
 
+    // The event count is the generator's, from its manifest: the test reads only the
+    // rollup, so it cannot count the events itself.
+    std::int64_t events_total = 0;
+    if (std::ifstream manifest_file(dir / "manifest.json"); manifest_file) {
+        const Json manifest = Json::parse(manifest_file, nullptr, false);
+        if (!manifest.is_discarded() && manifest.contains("facts")) {
+            events_total = manifest["facts"].value("events", std::int64_t{0});
+        }
+    }
+
     Json artifact;
     artifact["dataset"] = {{"accounts", accounts_total},
-                           {"events", 3870209},
+                           {"events", events_total},
                            {"churn_rate", static_cast<double>(churned) /
                                               static_cast<double>(accounts_total)},
                            {"features", model_inputs}};
@@ -406,7 +416,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     {
         std::vector<Json> all_rows = read_csv(dir / "account_features.csv");
         zetta::data::AddDatasetOptions all_options;
-        all_options.database = "motive_demo";
+        all_options.database = "comms_demo";
         all_options.table_name = "account_features_all";
         all_options.partitioned = true;
         all_options.members = {host.node.node_id()};
@@ -439,14 +449,14 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
         for (int repeat = 0; repeat < kRepeats; ++repeat) {
             const auto named_start = Clock::now();
             again = zetta::data::resolve_dataset(
-                host.node, zetta::data::parse_dataset_path("motive_demo.account_features_all"),
+                host.node, zetta::data::parse_dataset_path("comms_demo.account_features_all"),
                 overrides, {}, zetta::data::kDefaultSampleRows, &host.cluster);
             resolve_named.push_back(micros(named_start, Clock::now()));
             ASSERT_TRUE(again.ok()) << again.error;
 
             const auto inferred_start = Clock::now();
             inferred = zetta::data::resolve_dataset(
-                host.node, zetta::data::parse_dataset_path("motive_demo.account_features_all"),
+                host.node, zetta::data::parse_dataset_path("comms_demo.account_features_all"),
                 entity_only, {}, zetta::data::kDefaultSampleRows, &host.cluster);
             resolve_inferred.push_back(micros(inferred_start, Clock::now()));
             ASSERT_TRUE(inferred.ok()) << inferred.error;

@@ -4,9 +4,9 @@ The **entity-resolution check** (`zetta::usecases::churn::EntityResolutionCheck`
 `include/zetta/usecases/churn/entity_resolution_check.hpp`) is the first concrete
 correctness check to plug into the [correctness gate](../pipeline/gate.md). It is the
 **make-or-break** eval of FEAT-3 and realizes test case **TC-4**: it verifies
-that an execution graph resolved entities *division-correct* — that **"FedEx
-Freight" lands on its own CRM account without conflating the 5–6 sibling FedEx
-subsidiaries** (FedEx Ground, Express, Office, Logistics, …), which are separate
+that an execution graph resolved entities *division-correct* — that **"Contoso
+Freight" lands on its own CRM account without conflating the 5–6 sibling Contoso
+subsidiaries** (Contoso Ground, Express, Office, Logistics, …), which are separate
 accounts. Conflating them is the canonical failure this check exists to catch,
 and a conflation **fails the gate and blocks deploy** (RULE-1).
 
@@ -24,11 +24,11 @@ The check looks at every graph node whose `attributes` bag carries an
 {
   "entity_resolution": {
     "records": [
-      { "mention": "FedEx Freight",   "entity": "fedex_freight",   "resolved": "acct_fedex_freight" },
-      { "mention": "FedEx Ground",    "entity": "fedex_ground",    "resolved": "acct_fedex_ground" },
-      { "mention": "FedEx Express",   "entity": "fedex_express",   "resolved": "acct_fedex_express" },
-      { "mention": "FedEx Office",    "entity": "fedex_office",    "resolved": "acct_fedex_office" },
-      { "mention": "FedEx Logistics", "entity": "fedex_logistics", "resolved": "acct_fedex_logistics" }
+      { "mention": "Contoso Freight",   "entity": "contoso_freight",   "resolved": "acct_contoso_freight" },
+      { "mention": "Contoso Ground",    "entity": "contoso_ground",    "resolved": "acct_contoso_ground" },
+      { "mention": "Contoso Express",   "entity": "contoso_express",   "resolved": "acct_contoso_express" },
+      { "mention": "Contoso Office",    "entity": "contoso_office",    "resolved": "acct_contoso_office" },
+      { "mention": "Contoso Logistics", "entity": "contoso_logistics", "resolved": "acct_contoso_logistics" }
     ]
   }
 }
@@ -36,7 +36,7 @@ The check looks at every graph node whose `attributes` bag carries an
 
 Per record:
 
-- **`mention`** — the raw string the resolver saw (e.g. `"FedEx Freight"`).
+- **`mention`** — the raw string the resolver saw (e.g. `"Contoso Freight"`).
   Provenance/display only; optional.
 - **`entity`** — the **ground-truth** canonical division the mention truly
   belongs to (the fixture label). Required, non-empty.

@@ -1,6 +1,6 @@
 ---
 name: add-use-case
-description: Build a new catalog use case (UC-N) in the zetta engine — the ML/AI use-case creation recipe. Use when implementing a use case from the blueprint (churn's siblings - forecasting, lead scoring, triage, anomaly...), when asked to "add a use case", or when reviewing use-case work. Enforces the invariant shape (compose existing featurize→train→explain→rank primitives; new ML math lands in ml/ as a reusable op with its own oracle), the fixture-with-traps rule (every use case names its FedEx test), the canonical runner, and the four test kinds including an MCP journey.
+description: Build a new catalog use case (UC-N) in the zetta engine — the ML/AI use-case creation recipe. Use when implementing a use case from the blueprint (churn's siblings - forecasting, lead scoring, triage, anomaly...), when asked to "add a use case", or when reviewing use-case work. Enforces the invariant shape (compose existing featurize→train→explain→rank primitives; new ML math lands in ml/ as a reusable op with its own oracle), the fixture-with-traps rule (every use case names its Contoso test), the canonical runner, and the four test kinds including an MCP journey.
 ---
 
 # add-use-case — the UC-N engine recipe
@@ -17,8 +17,8 @@ for every step (`docs/use-cases/`).
    engine (featurize spec → train → explain → rank/act). If UC-N needs math
    the engine lacks, that op lands in `ml/` as a reusable, oracle-proven
    slice FIRST — never inside the use case.
-2. **Name the FedEx test.** Every use case must define its
-   plausible-but-wrong domain failure (churn's: conflating FedEx
+2. **Name the Contoso test.** Every use case must define its
+   plausible-but-wrong domain failure (churn's: conflating Contoso
    subsidiaries) and encode it: the fixture carries the trap, a gate `Check`
    fails on it, and the E2E proves the trap blocks deploy.
 
@@ -27,7 +27,7 @@ for every step (`docs/use-cases/`).
 1. Homes: `zetta::usecases::<name>` across include/src/tests/docs (+ README
    indexes, code-map).
 2. Fixture: committed, small, schema-validated, no foreign runtime; carries
-   the leakage trap (post-`as_of` events) + the FedEx-test trap.
+   the leakage trap (post-`as_of` events) + the Contoso-test trap.
 3. Featurize spec (existing DDF composition; static mode for pre-engineered
    columns).
 4. Gate check for the trap (the `Check` seam).

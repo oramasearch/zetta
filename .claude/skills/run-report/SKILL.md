@@ -38,12 +38,12 @@ Details: [`docs/pipeline/run-report.md`](../../../docs/pipeline/run-report.md).
 For the Motive demo dataset, which is generated outside any run:
 
 ```sh
-python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 15000
-ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
-    --gtest_filter='MotiveDemoDataset.*'
+python3 scripts/gen_comms_demo_dataset.py --out data/demo/comms --accounts 15000
+ZETTA_COMMS_DEMO_DIR=data/demo/comms ./build/tests/zetta-tests \
+    --gtest_filter='CommsDemoDataset.*'
 ```
 
-Writes `data/demo/motive/run-report.json`. Full detail:
+Writes `data/demo/comms/run-report.json`. Full detail:
 [`docs/runbooks/regenerating-the-run-report.md`](../../../docs/runbooks/regenerating-the-run-report.md).
 
 Either way the artifact carries `dataset`, `model` (both AUCs), `drivers`, and `at_risk`
@@ -94,7 +94,7 @@ Write to `docs/reports/results/<subject>-run-report-<YYYY-MM-DD>.md`.
 
 ```sh
 python3 .claude/skills/run-report/scripts/verify_report_numbers.py \
-    docs/reports/results/<report>.md data/demo/motive/run-report.json
+    docs/reports/results/<report>.md data/demo/comms/run-report.json
 ```
 
 Exit 0 means every figure in the prose maps to the artifact. Any output is either a number
@@ -117,7 +117,7 @@ State the account count wherever a figure appears, since the figures move with i
 
 A generated report:
 [`docs/reports/results/motive-churn-run-report-2026-08-04.md`](../../../docs/reports/results/motive-churn-run-report-2026-08-04.md).
-It passes step 4 against `data/demo/motive/run-report.json`.
+It passes step 4 against `data/demo/comms/run-report.json`.
 
 ## Requirements
 

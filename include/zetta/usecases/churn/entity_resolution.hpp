@@ -11,8 +11,8 @@
 // data step: before churn featurization can aggregate a customer's events against
 // the right account, the raw account-name strings on comms events (the `mention`s)
 // must be **resolved** to a canonical CRM account. The non-negotiable property is
-// *division-correctness* — "FedEx Freight" resolves to its own account **without
-// conflating** the 5–6 sibling FedEx subsidiaries (FedEx Ground, Express, Office,
+// *division-correctness* — "Contoso Freight" resolves to its own account **without
+// conflating** the 5–6 sibling Contoso subsidiaries (Contoso Ground, Express, Office,
 // Logistics, Services), which are separate CRM accounts. Conflating siblings is the
 // canonical failure the [entity-resolution gate](checks/entity_resolution_check.hpp)
 // exists to catch.
@@ -49,13 +49,13 @@ struct ResolutionCandidate {
 // How a mention is matched to a candidate.
 //
 //   * `FullName` — the **division-correct** default: match the normalized full
-//     account name (ASCII-lowercased, punctuation/whitespace folded), so "FedEx
-//     Freight" and the variant "Fedex Freight" both land on `acct_fedex_freight`
-//     while "FedEx Ground" stays a separate account. A mention that does not exactly
+//     account name (ASCII-lowercased, punctuation/whitespace folded), so "Contoso
+//     Freight" and the variant "contoso Freight" both land on `acct_contoso_freight`
+//     while "Contoso Ground" stays a separate account. A mention that does not exactly
 //     match a division name is left **unresolved** rather than force-fit to a wrong
 //     (possibly conflating) guess — the conservative choice.
 //   * `Brand` — a deliberately **coarse** strategy that collapses a mention to a
-//     brand bucket (`acct_brand_<brand>`), so every "FedEx …" mention merges onto one
+//     brand bucket (`acct_brand_<brand>`), so every "Contoso …" mention merges onto one
 //     account. This is the *wrong* way: it conflates the siblings. It exists to make
 //     the conflation the gate catches a real resolver behavior (the TC-4 trap), not a
 //     hand-mutated payload.
@@ -129,8 +129,8 @@ nlohmann::json entity_resolution_annotation(
 const nlohmann::json& entity_resolution_schema();
 
 // Normalize a name/mention for matching: ASCII-lowercase, fold every run of
-// non-alphanumeric characters to a single space, trim the ends. "FedEx Freight" and
-// "Fedex  Freight," both normalize to "fedex freight". Exposed for tests + reuse.
+// non-alphanumeric characters to a single space, trim the ends. "Contoso Freight" and
+// "contoso  Freight," both normalize to "contoso freight". Exposed for tests + reuse.
 std::string normalize_entity_name(std::string_view text);
 
 }  // namespace zetta::usecases::churn

@@ -149,8 +149,8 @@ TEST(Deployment, DeployGraphIsGatedRule1) {
     nlohmann::json resolution = {
         {"entity_resolution",
          {{"records",
-           {{{"mention", "FedEx Freight"}, {"entity", "fedex_freight"}, {"resolved", "acct_fedex"}},
-            {{"mention", "FedEx Ground"}, {"entity", "fedex_ground"}, {"resolved", "acct_fedex"}}}}}}};
+           {{{"mention", "Contoso Freight"}, {"entity", "contoso_freight"}, {"resolved", "acct_contoso"}},
+            {{"mention", "Contoso Ground"}, {"entity", "contoso_ground"}, {"resolved", "acct_contoso"}}}}}}};
     graph.add_node(StepKind::Clean, "resolve_accounts", resolution);
 
     const std::size_t audit_before = node.audit_event_count();

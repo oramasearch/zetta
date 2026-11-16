@@ -23,7 +23,7 @@
 //     to events with event_ts <= t0 and the label is a forward horizon — a few
 //     events are deliberately after t0 (the leakage trap a featurizer must drop);
 //   * a per-account churn label;
-//   * the make-or-break FedEx entity-resolution case (TC-4): FedEx Freight + 5
+//   * the make-or-break Contoso entity-resolution case (TC-4): Contoso Freight + 5
 //     sibling subsidiaries (Ground, Express, Office, Logistics, Services) as
 //     *separate* accounts, surfaced through entity_resolution_attribute() for
 //     zetta::usecases::churn::EntityResolutionCheck.
@@ -35,7 +35,7 @@
 namespace zetta::usecases::churn {
 
 // One account row. `entity` is the TC-4 ground truth; `account_id` is its correct
-// resolution target. Siblings share a `brand` (e.g. "FedEx") but are distinct
+// resolution target. Siblings share a `brand` (e.g. "Contoso") but are distinct
 // entities/accounts that must not be conflated.
 struct ChurnAccount {
     std::string account_id;
@@ -142,10 +142,10 @@ std::string write_churn_dataset(const ChurnDataset& dataset,
 // raw `mention` string and matches it to an account; the ground-truth `entity` (the
 // account the mention truly belongs to) is held out and recorded so the gate can
 // check the resolver's choice. With the default `FullName` strategy the resolution is
-// division-correct — "FedEx Freight" and the variant "Fedex Freight" both land on
-// `acct_fedex_freight` while "FedEx Ground" stays separate — so the payload passes
+// division-correct — "Contoso Freight" and the variant "contoso Freight" both land on
+// `acct_contoso_freight` while "Contoso Ground" stays separate — so the payload passes
 // `zetta::usecases::churn::EntityResolutionCheck` (TC-4) because it *resolved correctly*, not by
-// construction. Passing `ResolutionStrategy::Brand` collapses every "FedEx …" mention
+// construction. Passing `ResolutionStrategy::Brand` collapses every "Contoso …" mention
 // onto one brand bucket, producing the conflation the gate must fail (RULE-1) — the
 // real-resolver way to exercise the failure path. Attach the result to an
 // ExecutionGraph node to run it through the gate.

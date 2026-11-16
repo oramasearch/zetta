@@ -17,7 +17,7 @@ real [`ChurnStepExecutor`](../../../use-cases/churn-step-executor.md), with the
    `build_features` clean step — resolved with the `FullName` strategy by default,
    or the coarse `Brand` strategy when the `resolver` option selects it.
 2. **Gates first (RULE-1).** `default_gate().run(graph)` runs before anything is
-   placed. With `FullName` the FedEx siblings are kept apart, the gate passes, and
+   placed. With `FullName` the Contoso siblings are kept apart, the gate passes, and
    the pipeline proceeds. With `Brand` the resolver conflates the siblings onto one
    account, so the gate **fails and blocks deploy** — and the case passes by
    asserting the run never happens (the governed-correct outcome).
@@ -55,7 +55,7 @@ ctest --test-dir build -R 'Testkit.Uc1PipelineGatedAndGoverned' --output-on-fail
 
 | option | default | range | meaning |
 |---|---|---|---|
-| `resolver` | full_name (runs) | full_name · brand | `full_name` runs the whole pipeline; `brand` conflates the FedEx siblings so the gate blocks the run (RULE-1) |
+| `resolver` | full_name (runs) | full_name · brand | `full_name` runs the whole pipeline; `brand` conflates the Contoso siblings so the gate blocks the run (RULE-1) |
 | `trees` | 30 | 1–300 | GBDT trees |
 | `depth` | 3 | 1–10 | GBDT max depth |
 | `calibrate` | false | bool | fit held-out Platt calibration on the model |

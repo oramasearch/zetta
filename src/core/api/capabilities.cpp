@@ -8275,10 +8275,10 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
 
 // --- deployment_profile (#974) ------------------------------------------------------
 //
-// Charles's ask, on the 2026-08-05 call: "given a Helm chart dependency, this is how
-// you should configure this deployment instance… at that point I don't need anything
-// from you." The goal is not that we write a customer a chart — it is that a coding
-// agent pointed at a node over MCP can produce one without asking us anything.
+// The ask this answers: given a Helm chart dependency, tell the operator how to
+// configure the deployment, so they need nothing more from us. The goal is not that we
+// write a customer a chart — it is that a coding agent pointed at a node over MCP can
+// produce one without asking us anything.
 //
 // Computed from the LIVE node, never from a document. That is the whole value: a
 // deployment doc drifts from the binary, and the drift is only discovered in someone
@@ -9481,7 +9481,7 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
             {}};
     }
 
-    // The source as a human reads it: "postgres 127.0.0.1:5433/motive",
+    // The source as a human reads it: "postgres 127.0.0.1:5433/analytics",
     // "snowflake ab12345.us-east-1".
     std::string target = config->type;
     if (config->type == "postgres" || config->type == "mysql" || config->type == "tidb") {

@@ -111,7 +111,7 @@ private:
 };
 
 // A self-contained synthetic churn dataset built in code (no on-disk fixture): a
-// handful of accounts — including the FedEx Freight + sibling subsidiaries
+// handful of accounts — including the Contoso Freight + sibling subsidiaries
 // entity-resolution case (TC-4) — plus comms / usage events, with churn correlated
 // to failed payments and a couple of deliberately post-`as_of` events (the leakage
 // trap). Deterministic; the substrate the built-in ML / governance / pipeline cases

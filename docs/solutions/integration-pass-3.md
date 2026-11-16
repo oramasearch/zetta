@@ -88,7 +88,7 @@ ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 \
 
 Neither #959 nor #1124 required a waiver. The 16 skips are explicit optional
 test conditions: ten need local model checkpoints, three need an opt-in corpus
-or corpus-output path, one needs the generated Motive demo dataset, one needs
+or corpus-output path, one needs the generated communications demo dataset, one needs
 CUDA, and the no-engine fallback case does not apply when the full-text engine
 is compiled in. Schema regeneration, including `schemas/openapi.json`, is
 unchanged. The temporary PostgreSQL database is removed after the proof.

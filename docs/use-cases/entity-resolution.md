@@ -6,8 +6,8 @@ is the data step that runs **before** churn featurization: it maps the raw
 account-name strings on comms events — the `mention`s — to a canonical CRM
 account, so a customer's events aggregate against the right account. It is the
 **make-or-break** correctness step of FEAT-6 and realizes test case **TC-4**:
-*"FedEx Freight" must resolve to its own account **without conflating** the 5–6
-sibling FedEx subsidiaries* (FedEx Ground, Express, Office, Logistics, Services),
+*"Contoso Freight" must resolve to its own account **without conflating** the 5–6
+sibling Contoso subsidiaries* (Contoso Ground, Express, Office, Logistics, Services),
 which are separate CRM accounts.
 
 The resolver is the **producer**; the
@@ -34,8 +34,8 @@ A `ResolutionCandidate` is one candidate CRM account:
 ```cpp
 struct ResolutionCandidate {
     std::string account_id;  // the resolution target
-    std::string name;        // the FullName match key (e.g. "FedEx Freight")
-    std::string brand;       // the (coarse) Brand match key (e.g. "FedEx")
+    std::string name;        // the FullName match key (e.g. "Contoso Freight")
+    std::string brand;       // the (coarse) Brand match key (e.g. "Contoso")
     std::string entity;      // ground-truth division — labels output, never decides
 };
 ```
@@ -44,8 +44,8 @@ struct ResolutionCandidate {
 
 ```cpp
 EntityResolver resolver(candidates);                  // FullName (default)
-ResolvedMention r = resolver.resolve("Fedex Freight");
-// r.account_id == "acct_fedex_freight", r.resolved() == true
+ResolvedMention r = resolver.resolve("contoso Freight");
+// r.account_id == "acct_contoso_freight", r.resolved() == true
 ```
 
 Resolution is **transparent + deterministic** — pure normalized string matching,
@@ -60,25 +60,25 @@ non-alphanumeric characters to a single space, and trims:
 
 | input | normalized |
 | --- | --- |
-| `FedEx Freight` | `fedex freight` |
-| `Fedex  Freight,` | `fedex freight` |
-| `FedEx-Freight` | `fedex freight` |
-| `FedEx Freight, Inc.` | `fedex freight inc` |
+| `Contoso Freight` | `contoso freight` |
+| `contoso  Freight,` | `contoso freight` |
+| `Contoso-Freight` | `contoso freight` |
+| `Contoso Freight, Inc.` | `contoso freight inc` |
 
-So the case variant `"Fedex Freight"` and the canonical `"FedEx Freight"` both
-match the account named `"FedEx Freight"`.
+So the case variant `"contoso Freight"` and the canonical `"Contoso Freight"` both
+match the account named `"Contoso Freight"`.
 
 ### Strategies
 
 | Strategy | Match key | Behavior |
 | --- | --- | --- |
-| **`FullName`** (default) | normalized full account name | **Division-correct.** `"FedEx Freight"` → `acct_fedex_freight`, `"FedEx Ground"` stays separate. A mention that does not exactly match a division name is left **unresolved** rather than force-fit to a wrong (possibly conflating) guess — the conservative choice. |
-| **`Brand`** | normalized brand token | **Coarse / wrong.** Collapses every `"FedEx …"` mention onto one bucket `acct_brand_fedex`. This is the conflation trap — it exists to make the failure the gate catches a *real resolver behavior*, not a hand-mutated payload. |
+| **`FullName`** (default) | normalized full account name | **Division-correct.** `"Contoso Freight"` → `acct_contoso_freight`, `"Contoso Ground"` stays separate. A mention that does not exactly match a division name is left **unresolved** rather than force-fit to a wrong (possibly conflating) guess — the conservative choice. |
+| **`Brand`** | normalized brand token | **Coarse / wrong.** Collapses every `"Contoso …"` mention onto one bucket `acct_brand_contoso`. This is the conflation trap — it exists to make the failure the gate catches a *real resolver behavior*, not a hand-mutated payload. |
 
 The `FullName` match is exact-on-the-normalized-name, so the deliberate
 near-collision in the fixture — `"Umbrella Logistics"` shares the `logistics`
-token with `"FedEx Logistics"` — resolves correctly (to `acct_umbrella`, not
-`acct_fedex_logistics`); a looser token-overlap match would be fooled.
+token with `"Contoso Logistics"` — resolves correctly (to `acct_umbrella`, not
+`acct_contoso_logistics`); a looser token-overlap match would be fooled.
 
 ## Building the annotation
 
@@ -106,8 +106,8 @@ mentions from its comms events, then calls `entity_resolution_annotation`.
 
 The `entity_resolution` payload compares each record's `resolved` account against
 its ground-truth `entity`. When the `FullName` resolver is correct, every account
-maps to exactly one entity → **pass**. The `Brand` resolver collapses the six FedEx
-divisions onto `acct_brand_fedex`, which then holds six distinct entities →
+maps to exactly one entity → **pass**. The `Brand` resolver collapses the six Contoso
+divisions onto `acct_brand_contoso`, which then holds six distinct entities →
 **conflation → fail → blocks deploy** (RULE-1). See
 [entity-resolution-check.md](entity-resolution-check.md) for the rule.
 
@@ -133,7 +133,7 @@ end to end) is a natural follow-up on top of this seam.
 ## Pointers
 
 - [entity-resolution-check.md](entity-resolution-check.md) — the TC-4 gate this resolver feeds.
-- [churn-dataset.md](churn-dataset.md) — the synthetic fixture (the FedEx case) the resolver runs over.
+- [churn-dataset.md](churn-dataset.md) — the synthetic fixture (the Contoso case) the resolver runs over.
 - [ddf-featurize.md](../ddf/ddf-featurize.md) — the numeric point-in-time featurization the resolved accounts feed.
 - [intent-compiler.md](../pipeline/intent-compiler.md) — the sibling "transparent, deterministic, heuristic" seam.
 - [gate.md](../pipeline/gate.md) — the correctness gate that blocks deploy on conflation (RULE-1).

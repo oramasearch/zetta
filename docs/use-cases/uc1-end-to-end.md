@@ -52,7 +52,7 @@ The happy path, asserting all three acceptance properties at once:
    division-correct `entity_resolution` annotation (resolved from the comms
    mentions with the `FullName` strategy) on its clean / feature-build step.
    `default_gate().run(graph)` **passes** and does not block deploy, and the
-   `entity_resolution` check is present and `Pass` — the FedEx siblings were kept
+   `entity_resolution` check is present and `Pass` — the Contoso siblings were kept
    apart, so the run is allowed to proceed.
 2. **Governed access.** A `retention-pipeline` service principal holds a key
    scoped to the `churn` project + database with `orchestration:start_run` and
@@ -79,7 +79,7 @@ The happy path, asserting all three acceptance properties at once:
 ### 2. `ConflatingResolutionBlocksTheGatedRun`
 
 The make-or-break negative. The same churn graph carries a `Brand`-strategy
-resolution annotation, which **conflates** the FedEx siblings onto one account —
+resolution annotation, which **conflates** the Contoso siblings onto one account —
 the canonical TC-4 failure. `default_gate().run(graph)` now **fails** and blocks
 deploy (RULE-1), with the `entity_resolution` check `Fail`. The run never happens:
 no model is trained, no compute is placed. This is the teeth behind

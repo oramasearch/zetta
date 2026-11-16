@@ -78,7 +78,7 @@ __pycache__/
 data/corpora/
 data/sft-logs/
 
-# Generated demo datasets — reproducible from scripts/gen_motive_demo_dataset.py
+# Generated demo datasets — reproducible from scripts/gen_comms_demo_dataset.py
 # (the generator + manifest are tracked; the rows are not — 80 MB of CSV).
 data/demo/*
 !data/demo/README.md

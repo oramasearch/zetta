@@ -389,8 +389,8 @@ TEST(DistributedIngest, ANonSnowflakeConfigNeverTakesTheSnowflakeProtocol) {
     postgres.type = "postgres";
     postgres.host = "127.0.0.1";
     postgres.port = "5433";
-    postgres.user = "motive";
-    postgres.database = "motive";
+    postgres.user = "analyst";
+    postgres.database = "analytics";
 
     DistributedIngestOptions options = ingest_options();
     options.connection.clear();  // inline config; no saved connection

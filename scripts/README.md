@@ -41,7 +41,7 @@ catalog-only agent borrows the churn template for search and hallucinates a pipe
 ```bash
 uv run gen_base_corpus.py --self-test               # offline: churn + search + abstain gate
 uv run gen_base_corpus.py --out corpus.jsonl        # 20/use case + 40 search + 24 abstain
-uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
+uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=current-workflow.n8n.json
 uv run gen_base_corpus.py --out corpus.jsonl --append --push
 ```
 Env: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-4.5`),
@@ -69,11 +69,11 @@ uv run gen_autosuggest_corpus.py --out autosuggest.jsonl --append --push
 Env: same as `gen_base_corpus.py`; point `HF_DATASET_REPO` at the **Auto-Suggest** dataset
 (separate from the agent corpus).
 
-### `gen_synthetic_churn_pg.py` — frontier → local Postgres (Charles's schema)
-Synthesize accounts + communications in the exact schema recovered from Charles's n8n
-(`account_registry` / `account_events` / `account_labels`), with learnable churn signal
-(churned accounts escalate more) — so the fork (#853) trains near real-shaped data with
-no live-Snowflake dependency.
+### `gen_synthetic_churn_pg.py` — frontier → local Postgres
+Synthesize accounts + communications for an invented B2B subscription business, in three
+CRM-style tables (`account_registry` / `account_events` / `account_labels`), with learnable
+churn signal (churned accounts escalate more) — so the fork (#853) trains on realistically
+shaped data with no live-warehouse dependency.
 
 ```bash
 uv run gen_synthetic_churn_pg.py --self-test         # offline: schema + signal (no DB/API)
@@ -86,6 +86,17 @@ Target DB precedence: `DATABASE_URL` > `--database` > `PGDATABASE` > `orama_chur
 (the explicit default — never libpq's implicit user-named DB; the script prints the
 resolved target). `OPENROUTER_API_KEY` only for `--realistic`. Deps (`requests`,
 `psycopg2-binary`) are declared inline (PEP 723) and resolved by `uv run`.
+
+## Demo datasets
+
+Offline, stdlib-only, seeded generators for churn demos. Every source, rate, segment and
+company in them is invented.
+
+- `gen_comms_demo_dataset.py` — a synthetic communications event log, its account
+  dimension and the flat feature rollup (`data/demo/comms/`, see
+  [`data/demo/README.md`](../data/demo/README.md)). The `CommsDemoDataset` test trains on it.
+- `gen_churn_dataset_dir.py` — a 500-account churn dataset directory (`dataset.json` +
+  `accounts.jsonl` + `events.jsonl`) with the Contoso entity-resolution siblings.
 
 ## Gate discipline
 The Python gate is a **pre-filter**; the **authoritative** gate is the native

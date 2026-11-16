@@ -120,7 +120,7 @@ TestResult run_audit(const TestOptions&, TestContext& context) {
 }
 
 // The entity-resolution gate: a division-correct (FullName) resolver passes; a
-// coarse (Brand) resolver conflates the FedEx siblings and is blocked (TC-4 / RULE-1).
+// coarse (Brand) resolver conflates the Contoso siblings and is blocked (TC-4 / RULE-1).
 TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& context) {
     const bool brand = options.get_choice("resolver", 0) == 1;
     const zetta::usecases::churn::ResolutionStrategy strategy =
@@ -149,7 +149,7 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
             return TestResult::fail("the conflating resolver should have blocked the gate");
         }
         TestResult result = TestResult::pass(
-            "the Brand resolver conflated the FedEx siblings and the gate blocked deploy");
+            "the Brand resolver conflated the Contoso siblings and the gate blocked deploy");
         result.metric("gate", "blocked")
             .metric("entity_resolution", "fail");
         return result;
@@ -159,7 +159,7 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
         return TestResult::fail("the division-correct resolver should have passed the gate");
     }
     TestResult result = TestResult::pass(
-        "the FedEx siblings stayed separate accounts and the gate passed");
+        "the Contoso siblings stayed separate accounts and the gate passed");
     result.metric("gate", "passed").metric("entity_resolution", "pass");
     return result;
 }
@@ -346,7 +346,7 @@ void register_governance_cases(TestSuite& suite) {
         .name = "Entity-resolution gate (TC-4)",
         .description = "Run the correctness gate over a churn graph whose clean "
                        "step carries a resolution annotation. FullName is "
-                       "division-correct and passes; Brand conflates the FedEx "
+                       "division-correct and passes; Brand conflates the Contoso "
                        "siblings and is blocked (RULE-1).",
         .options = {TestOption::choice("resolver", "Resolver",
                                        {"full_name (correct)", "brand (conflates)"}, 0,

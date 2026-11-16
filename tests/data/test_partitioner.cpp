@@ -176,12 +176,12 @@ TEST(HashPartitioner, ZeroPartitionCountIsClampedToOne) {
 
 TEST(HashPartitioner, IsDeterministicForAGivenKey) {
     HashPartitioner partitioner{128, {"account_id"}};
-    const nlohmann::json record{{"account_id", "acct_fedex_freight"}, {"arr", 90000}};
+    const nlohmann::json record{{"account_id", "acct_contoso_freight"}, {"arr", 90000}};
     const PartitionId first = partitioner.assign_partition(record);
     // Same key → same partition, every time and regardless of other fields.
     EXPECT_EQ(partitioner.assign_partition(record), first);
     EXPECT_EQ(
-        partitioner.assign_partition(nlohmann::json{{"account_id", "acct_fedex_freight"},
+        partitioner.assign_partition(nlohmann::json{{"account_id", "acct_contoso_freight"},
                                                     {"arr", 5}}),
         first);
     // A second HashPartitioner with the same config agrees (stable across

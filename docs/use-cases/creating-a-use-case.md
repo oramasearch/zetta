@@ -31,9 +31,9 @@ use-case-specific *configuration*, not use-case-specific *math*:
 2. **Synthetic fixture** (the UC-1 pattern, `churn-dataset.md`): committed,
    small, schema-validated at the boundary, **no foreign runtime**, and
    carrying the use case's *traps* — the deliberate leakage case (events after
-   `as_of`) and the correctness-defining case (churn's FedEx entity-resolution
+   `as_of`) and the correctness-defining case (churn's Contoso entity-resolution
    analog: the domain mistake that must fail the gate). Every use case must
-   name its "FedEx test" — what does *wrong but plausible* look like here?
+   name its "Contoso test" — what does *wrong but plausible* look like here?
 3. **Featurize spec**: express the feature table as the existing DDF
    composition (as-of windows, group-bys, joins; leakage-free by
    construction). Static/engineered-columns mode if the data arrives

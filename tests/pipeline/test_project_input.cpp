@@ -88,7 +88,7 @@ TEST(ProjectInput, CreateFetchDropWithProvenance) {
     const std::string workflow = R"({"nodes":[],"connections":{}})";
     auto artifact = project->create_input(ProjectInputKind::Artifact,
                                           ProjectInputSource::Upload, workflow,
-                                          "churn.json", "user:charles");
+                                          "churn.json", "user:alice");
     ASSERT_TRUE(artifact);
     EXPECT_EQ(artifact->filename(), "churn.json");
     EXPECT_EQ(artifact->content_hash(), zetta::util::sha256_hex(workflow));
@@ -283,7 +283,7 @@ TEST(ProjectInput, ReplicatesToPeer) {
     ASSERT_TRUE(project_a);
     auto created = project_a->create_input(ProjectInputKind::Artifact,
                                            ProjectInputSource::Upload, kIntent,
-                                           "churn.json", "user:charles");
+                                           "churn.json", "user:alice");
     ASSERT_TRUE(created);
 
     // Node B converges to the same input record (metadata) under its project.
@@ -301,7 +301,7 @@ TEST(ProjectInput, ReplicatesToPeer) {
     EXPECT_EQ(replicated->kind(), ProjectInputKind::Artifact);
     EXPECT_EQ(replicated->source(), ProjectInputSource::Upload);
     EXPECT_EQ(replicated->filename(), "churn.json");
-    EXPECT_EQ(replicated->created_by(), "user:charles");
+    EXPECT_EQ(replicated->created_by(), "user:alice");
     EXPECT_EQ(replicated->content_hash(), zetta::util::sha256_hex(kIntent));
     EXPECT_EQ(replicated->size(), std::string(kIntent).size());
     // The payload body does NOT transfer yet (a later slice, like LO bodies):
